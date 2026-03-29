@@ -1,0 +1,95 @@
+"""BIST ticker metadata for the 11 coverage universe tickers."""
+
+TICKERS = {
+    "THYAO": {
+        "name": "Türk Hava Yolları A.O.",
+        "sector": "Ulaştırma",
+        "sub_sector": "Havayolları",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.75,
+    },
+    "TCELL": {
+        "name": "Turkcell İletişim Hizmetleri A.Ş.",
+        "sector": "Teknoloji",
+        "sub_sector": "Telekomünikasyon",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.10,
+    },
+    "TTKOM": {
+        "name": "Türk Telekomünikasyon A.Ş.",
+        "sector": "Teknoloji",
+        "sub_sector": "Telekomünikasyon",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.05,
+    },
+    "HALKB": {
+        "name": "Türkiye Halk Bankası A.Ş.",
+        "sector": "Mali Kuruluşlar",
+        "sub_sector": "Bankacılık",
+        "benchmark": "XBANK",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.15,
+    },
+    "KRDMD": {
+        "name": "Kardemir Karabük Demir Çelik Sanayi ve Ticaret A.Ş.",
+        "sector": "Metal Ana Sanayi",
+        "sub_sector": "Demir-Çelik",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.30,
+    },
+    "SISE": {
+        "name": "Türkiye Şişe ve Cam Fabrikaları A.Ş.",
+        "sector": "Cam",
+        "sub_sector": "Cam Ürünleri",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.50,
+    },
+    "ASELS": {
+        "name": "Aselsan Elektronik Sanayi ve Ticaret A.Ş.",
+        "sector": "Teknoloji",
+        "sub_sector": "Savunma",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.25,
+    },
+    "TUPRS": {
+        "name": "Tüpraş-Türkiye Petrol Rafinerileri A.Ş.",
+        "sector": "Petrokimya",
+        "sub_sector": "Rafineri",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.60,
+    },
+    "EREGL": {
+        "name": "Ereğli Demir ve Çelik Fabrikaları T.A.Ş.",
+        "sector": "Metal Ana Sanayi",
+        "sub_sector": "Demir-Çelik",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.45,
+    },
+    "SAHOL": {
+        "name": "Hacı Ömer Sabancı Holding A.Ş.",
+        "sector": "Holdingler",
+        "sub_sector": "Holding",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.30,
+    },
+    "BIMAS": {
+        "name": "BİM Birleşik Mağazalar A.Ş.",
+        "sector": "Perakende Ticaret",
+        "sub_sector": "Gıda Perakende",
+        "benchmark": "XU100",
+        "currency": "TRY",
+        "fx_revenue_pct": 0.05,
+    },
+}
+
+# All ticker symbols
+TICKER_LIST = list(TICKERS.keys())

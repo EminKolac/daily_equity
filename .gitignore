@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+bist-equity-research/data/cache/
+bist-equity-research/reports/
+*.pdf
+.DS_Store
