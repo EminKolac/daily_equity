@@ -1,5 +1,9 @@
 # BIST Equity Research — Weekly Sunday 10:00 AM Istanbul Time (UTC+3 = 07:00 UTC)
-# Add to crontab with: crontab crontab.txt
-# Or: crontab -e and paste the line below
+#
+# Install with: crontab /home/user/daily_equity/bist-equity-research/crontab.txt
+# Or append with: (crontab -l 2>/dev/null; cat /home/user/daily_equity/bist-equity-research/crontab.txt) | crontab -
+#
+# Coverage: THYAO, TCELL, TTKOM, HALKB, KRDMD, SISE, ASELS, TUPRS, EREGL, SAHOL, BIMAS
+# Recipient: mehmetemin.kolac@tvf.com.tr
 
-0 7 * * 0 cd /home/user/daily_equity/bist-equity-research && /usr/bin/python3 scheduler.py --now >> /var/log/bist-research.log 2>&1
+0 7 * * 0 /home/user/daily_equity/bist-equity-research/run_weekly.sh >> /var/log/bist-research.log 2>&1

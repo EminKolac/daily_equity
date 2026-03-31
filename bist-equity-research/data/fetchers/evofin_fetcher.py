@@ -141,11 +141,15 @@ class EvofinFetcher:
     async def get_activity_report(self, ticker: str) -> str:
         """Search for the company's latest activity report (faaliyet raporu)."""
         results = await self.search_documents(f"{ticker} faaliyet raporu", page=1, per_page=5)
-        if not results.get("sonuclar"):
+        if not isinstance(results, dict) or not results.get("sonuclar"):
             return ""
-        chunk_ids = [r["id"] for r in results["sonuclar"][:3]]
+        chunk_ids = [r["id"] for r in results["sonuclar"][:3] if isinstance(r, dict) and "id" in r]
+        if not chunk_ids:
+            return ""
         chunks = await self.load_document_chunks(chunk_ids)
-        return "\n\n".join(c.get("icerik", "") for c in chunks)
+        if not isinstance(chunks, list):
+            return ""
+        return "\n\n".join(c.get("icerik", "") for c in chunks if isinstance(c, dict))
 
     async def fetch_all(self, ticker: str) -> dict[str, Any]:
         """Fetch all data for a given ticker."""

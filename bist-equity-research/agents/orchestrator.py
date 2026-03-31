@@ -107,8 +107,22 @@ async def run_research_pipeline(
     llm=None,
     mcp_client=None,
 ) -> ResearchState:
-    """Run the full research pipeline for a single ticker."""
+    """Run the full research pipeline for a single ticker.
+
+    If mcp_client is None, attempts to connect to MCP servers from config.
+    """
     logger.info("Starting research pipeline for %s", ticker)
+
+    # Auto-connect to MCP servers if not provided
+    mcp_clients = {}
+    if mcp_client is None:
+        try:
+            from data.fetchers.mcp_client import create_mcp_clients
+            from config.settings import MCP_SERVERS
+            mcp_clients = await create_mcp_clients(MCP_SERVERS)
+            mcp_client = mcp_clients.get("evofin")
+        except Exception as e:
+            logger.warning("MCP auto-connect failed: %s — continuing without MCP", e)
 
     graph = build_research_graph(llm=llm, mcp_client=mcp_client)
     app = graph.compile()
@@ -136,9 +150,18 @@ async def run_research_pipeline(
         "agent_logs": [],
     }
 
-    # Run the graph
-    final_state = await app.ainvoke(initial_state)
-    logger.info("Pipeline complete for %s. Agents: %d, Errors: %d",
-                ticker, len(final_state.get("agent_logs", [])),
-                len(final_state.get("errors", [])))
-    return final_state
+    try:
+        # Run the graph
+        final_state = await app.ainvoke(initial_state)
+        logger.info("Pipeline complete for %s. Agents: %d, Errors: %d",
+                    ticker, len(final_state.get("agent_logs", [])),
+                    len(final_state.get("errors", [])))
+        return final_state
+    finally:
+        # Clean up MCP connections
+        if mcp_clients:
+            try:
+                from data.fetchers.mcp_client import close_mcp_clients
+                await close_mcp_clients(mcp_clients)
+            except Exception:
+                pass
