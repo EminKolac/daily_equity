@@ -17,7 +17,9 @@ class QuartrFetcher:
         if self.mcp:
             try:
                 result = await self.mcp.call_tool("quartr_transcript", {"ticker": ticker})
-                return result.get("transcript", "")
+                if isinstance(result, dict):
+                    return result.get("transcript", "")
+                return str(result) if result else ""
             except Exception as e:
                 logger.error("Quartr transcript failed for %s: %s", ticker, e)
         return ""
@@ -27,7 +29,7 @@ class QuartrFetcher:
         if self.mcp:
             try:
                 result = await self.mcp.call_tool("quartr_consensus", {"ticker": ticker})
-                return result
+                return result if isinstance(result, dict) else {}
             except Exception as e:
                 logger.error("Quartr consensus failed for %s: %s", ticker, e)
         return {}
