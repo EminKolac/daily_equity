@@ -1,5 +1,9 @@
 # BIST Equity Research — Weekly Sunday 10:00 AM Istanbul Time (UTC+3 = 07:00 UTC)
 # Add to crontab with: crontab crontab.txt
 # Or: crontab -e and paste the line below
+#
+# Option 1: Cron job (one-shot per week)
+0 7 * * 0 cd /home/user/daily_equity/bist-equity-research && /usr/local/bin/python3 scheduler.py --now >> /var/log/bist-research.log 2>&1
 
-0 7 * * 0 cd /home/user/daily_equity/bist-equity-research && /usr/bin/python3 scheduler.py --now >> /var/log/bist-research.log 2>&1
+# Option 2: Long-running scheduler (keeps process alive, handles scheduling internally)
+# cd /home/user/daily_equity/bist-equity-research && nohup /usr/local/bin/python3 scheduler.py >> /var/log/bist-research.log 2>&1 &
