@@ -15,6 +15,33 @@ from data.fetchers.quartr_fetcher import QuartrFetcher
 logger = logging.getLogger(__name__)
 
 
+def _build_coverage_from_evofin(analyst_targets: list[dict]) -> dict:
+    """Convert evofin analyst_targets to the coverage format expected by sentiment_analyst.
+
+    Evofin returns: [{araci_kurum_kodu, kisa_unvan, hedef_fiyat, tavsiye, yayin_tarihi_europe_istanbul}]
+    Sentiment analyst expects: {recommendations: [{recommendation, targetPrice, ...}]}
+    """
+    if not analyst_targets:
+        return {}
+    recs = []
+    for t in analyst_targets:
+        tavsiye = str(t.get("tavsiye", "")).lower()
+        # Map Turkish recommendation to standard
+        if tavsiye in ("al", "güçlü al", "endeks_ustu"):
+            rec = "Buy"
+        elif tavsiye in ("sat", "güçlü sat", "endeks_alti"):
+            rec = "Sell"
+        else:
+            rec = "Hold"
+        recs.append({
+            "recommendation": rec,
+            "targetPrice": float(t.get("hedef_fiyat", 0) or 0),
+            "broker": t.get("kisa_unvan", t.get("araci_kurum_kodu", "")),
+            "date": str(t.get("yayin_tarihi_europe_istanbul", "")),
+        })
+    return {"recommendations": recs}
+
+
 def create_data_collector(mcp_client=None):
     """Factory: returns a data collector node function."""
 
@@ -112,7 +139,9 @@ def create_data_collector(mcp_client=None):
                 "earnings_transcript": collected.get("earnings_transcript", ""),
                 "quartr_consensus": collected.get("quartr_consensus", {}),
             },
-            "isyatirim_coverage": collected.get("isyatirim_coverage", {}),
+            "isyatirim_coverage": collected.get("isyatirim_coverage", {})
+                if collected.get("isyatirim_coverage") else
+                _build_coverage_from_evofin(collected.get("analyst_targets", [])),
             "social_media_data": {
                 "twitter_tweets": collected.get("twitter_tweets", []),
                 "twitter_count": collected.get("twitter_count", 0),

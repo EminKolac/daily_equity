@@ -55,8 +55,8 @@ def _extract_financials(financial_data: dict) -> dict:
                 index="tarih", columns="kalem", values="deger", aggfunc="first"
             ).sort_index()
             if not pivoted.empty:
-                # Revenue trend
-                for col_name in ["Hasılat", "Net Satışlar", "Satış Gelirleri"]:
+                # Revenue trend (evofin uses "Satış Gelirleri")
+                for col_name in ["Satış Gelirleri", "Hasılat", "Net Satışlar"]:
                     if col_name in pivoted.columns:
                         rev_series = pivoted[col_name].dropna()
                         if len(rev_series) >= 2:
@@ -68,7 +68,7 @@ def _extract_financials(financial_data: dict) -> dict:
                             )
                         break
                 # Gross margin trend
-                for rev_col in ["Hasılat", "Net Satışlar", "Satış Gelirleri"]:
+                for rev_col in ["Satış Gelirleri", "Hasılat", "Net Satışlar"]:
                     for cogs_col in ["Satışların Maliyeti (-)", "Satışların Maliyeti"]:
                         if rev_col in pivoted.columns and cogs_col in pivoted.columns:
                             rev_s = pivoted[rev_col].dropna()
@@ -93,15 +93,16 @@ def _extract_financials(financial_data: dict) -> dict:
             bs_items = dict(zip(latest_bs["kalem"], latest_bs["deger"].apply(_safe_float)))
 
             # Map common Turkish balance sheet items
+            # Real evofin balance sheet kalem names
             item_map = {
-                "current_assets": ["Dönen Varlıklar"],
-                "non_current_assets": ["Duran Varlıklar"],
-                "total_assets": ["Toplam Varlıklar", "TOPLAM VARLIKLAR"],
-                "current_liabilities": ["Kısa Vadeli Yükümlülükler"],
-                "non_current_liabilities": ["Uzun Vadeli Yükümlülükler"],
-                "total_equity": ["Özkaynaklar", "Ana Ortaklık Payları"],
+                "current_assets": ["Toplam Dönen Varlıklar"],
+                "non_current_assets": ["Toplam Duran Varlıklar"],
+                "total_assets": ["Toplam Varlıklar"],
+                "current_liabilities": ["Toplam Kısa Vadeli Yükümlülükler"],
+                "non_current_liabilities": ["Toplam Uzun Vadeli Yükümlülükler"],
+                "total_equity": ["Toplam Özkaynaklar", "Ana Ortaklığa Ait Özkaynaklar"],
                 "total_liabilities": ["Toplam Yükümlülükler"],
-                "retained_earnings": ["Geçmiş Yıllar Kârları/Zararları"],
+                "retained_earnings": ["Geçmiş Yıllar Karları/Zararları"],
                 "paid_in_capital": ["Ödenmiş Sermaye"],
                 "trade_receivables": ["Ticari Alacaklar"],
                 "long_term_debt": ["Finansal Borçlar"],
@@ -174,15 +175,22 @@ def create_fundamental_analyst(llm=None):
         shares = market_cap / current_price if current_price > 0 else 1
 
         # Extract key values — prefer evofin data, fallback to Yahoo stock_info
+        # Real evofin kalem names (validated April 2026):
+        #   Income: "Satış Gelirleri", "Dönem Net Karı (Zararı)", "Brüt Kar (Zarar)",
+        #           "Faaliyet Karı (Zararı)", "Satışların Maliyeti (-)"
+        #   Balance: "Toplam Dönen Varlıklar", "Toplam Varlıklar", "Toplam Özkaynaklar",
+        #            "Ticari Alacaklar", "Finansal Borçlar"
+        #   Cash flow: "İşletme Faaliyetlerinden Nakit Akışları"
         net_income = _safe_float(
+            metrics.get("income_Dönem Net Karı (Zararı)") or
             metrics.get("income_Net Dönem Karı/Zararı") or
             metrics.get("income_Net Dönem Karı") or
             stock_info.get("netIncomeToCommon")
         )
         revenue = _safe_float(
+            metrics.get("income_Satış Gelirleri") or
             metrics.get("income_Hasılat") or
             metrics.get("income_Net Satışlar") or
-            metrics.get("income_Satış Gelirleri") or
             stock_info.get("totalRevenue")
         )
         total_assets = _safe_float(

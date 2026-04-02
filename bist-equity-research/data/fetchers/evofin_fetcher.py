@@ -3,11 +3,20 @@
 Uses the evofin MCP tools (sembol_arama, veri_sorgula, dokumanlarda_ara,
 dokuman_chunk_yukle, finansal_beceri_yukle) via the Claude MCP integration.
 
-When running inside Claude Code with MCP, these tools are called directly.
-For standalone execution, we provide a fallback HTTP client.
+Real evofin schema (validated April 2026):
+  - hisse_senetleri: company profile (hisse_senedi_kodu, unvan, piyasa_degeri, son_fiyat, ...)
+  - hisse_finansal_tablolari: periods index (hisse_senedi_kodu, yil, ay)
+  - hisse_finansal_tablolari_gelir_tablosu_kalemleri: income statement items
+  - hisse_finansal_tablolari_bilanco_kalemleri: balance sheet items
+  - hisse_finansal_tablolari_nakit_akis_tablosu_kalemleri: cash flow items
+  - hisse_finansal_tablolari_finansal_oranlari: financial ratios
+  - hisse_senedi_araci_kurum_hedef_fiyatlari: analyst target prices
+  - mumlar_gunluk_gh: daily OHLCV candles
+
+All financial item tables use: hisse_senedi_kodu, yil, ay, kalem, try_donemsel
+Output is normalized to: tarih (YYYY-MM), kalem, deger — for downstream compatibility.
 """
 
-import json
 import logging
 from typing import Any
 
@@ -57,77 +66,173 @@ class EvofinFetcher:
             return result
         return []
 
+    def _normalize_financials(self, rows: list[dict]) -> pd.DataFrame:
+        """Normalize evofin financial rows (yil/ay/kalem/try_donemsel)
+        into downstream-compatible format (tarih/kalem/deger)."""
+        if not rows:
+            return pd.DataFrame(columns=["tarih", "kalem", "deger"])
+
+        records = []
+        for r in rows:
+            tarih = f"{r.get('yil', '')}-{int(r.get('ay', 0)):02d}"
+            records.append({
+                "tarih": tarih,
+                "kalem": r.get("kalem", ""),
+                "deger": r.get("try_donemsel"),
+            })
+        df = pd.DataFrame(records)
+        return df
+
+    def _normalize_ratios(self, rows: list[dict]) -> pd.DataFrame:
+        """Normalize evofin ratio rows (yil/ay/kategori/oran/deger)
+        into downstream-compatible format (tarih/kalem/deger)."""
+        if not rows:
+            return pd.DataFrame(columns=["tarih", "kalem", "deger"])
+
+        records = []
+        for r in rows:
+            tarih = f"{r.get('yil', '')}-{int(r.get('ay', 0)):02d}"
+            records.append({
+                "tarih": tarih,
+                "kalem": r.get("oran", ""),
+                "deger": r.get("deger"),
+                "kategori": r.get("kategori", ""),
+            })
+        return pd.DataFrame(records)
+
     async def get_company_profile(self, ticker: str) -> dict:
         sql = f"""
         SELECT hisse_senedi_kodu, unvan, odenmis_sermaye, fiili_dolasim_orani,
                piyasa_degeri, son_fiyat, fonksiyonel_para_birimi
         FROM hisse_senetleri
         WHERE hisse_senedi_kodu = '{ticker}'
+        LIMIT 1
         """
         rows = await self.query(sql)
         return rows[0] if rows else {}
 
-    async def get_income_statement(self, ticker: str, quarters: int = 12) -> pd.DataFrame:
-        sql = f"""
-        SELECT tarih, kalem, deger
-        FROM finansal_tablolar
-        WHERE hisse_senedi_kodu = '{ticker}'
-          AND tablo = 'income_statement'
-          AND tur = 'quarterly'
-        ORDER BY tarih DESC
-        LIMIT {quarters * 4}
-        """
-        rows = await self.query(sql)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    async def get_income_statement(self, ticker: str, periods: int = 10) -> pd.DataFrame:
+        """Fetch income statement items for recent periods.
 
-    async def get_balance_sheet(self, ticker: str, quarters: int = 8) -> pd.DataFrame:
+        Real table: hisse_finansal_tablolari_gelir_tablosu_kalemleri
+        Columns: hisse_senedi_kodu, yil, ay, satir_no, kalem, try_donemsel, try_ceyreklik, try_ttm
+        """
         sql = f"""
-        SELECT tarih, kalem, deger
-        FROM finansal_tablolar
+        SELECT yil, ay, kalem, try_donemsel
+        FROM hisse_finansal_tablolari_gelir_tablosu_kalemleri
         WHERE hisse_senedi_kodu = '{ticker}'
-          AND tablo = 'balance_sheet'
-          AND tur = 'quarterly'
-        ORDER BY tarih DESC
-        LIMIT {quarters * 25}
+          AND (yil, ay) IN (
+            SELECT yil, ay FROM hisse_finansal_tablolari
+            WHERE hisse_senedi_kodu = '{ticker}'
+            ORDER BY yil DESC, ay DESC
+            LIMIT {periods}
+          )
+        ORDER BY yil DESC, ay DESC, satir_no ASC
         """
         rows = await self.query(sql)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+        return self._normalize_financials(rows)
 
-    async def get_cash_flow(self, ticker: str, quarters: int = 8) -> pd.DataFrame:
-        sql = f"""
-        SELECT tarih, kalem, deger
-        FROM finansal_tablolar
-        WHERE hisse_senedi_kodu = '{ticker}'
-          AND tablo = 'cash_flow'
-          AND tur = 'quarterly'
-        ORDER BY tarih DESC
-        LIMIT {quarters * 12}
-        """
-        rows = await self.query(sql)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+    async def get_balance_sheet(self, ticker: str, periods: int = 8) -> pd.DataFrame:
+        """Fetch balance sheet items for recent periods.
 
-    async def get_ratios(self, ticker: str) -> pd.DataFrame:
+        Real table: hisse_finansal_tablolari_bilanco_kalemleri
+        Columns: hisse_senedi_kodu, yil, ay, satir_no, kalem, try_donemsel
+        """
         sql = f"""
-        SELECT tarih, kalem, deger
-        FROM finansal_tablolar
+        SELECT yil, ay, kalem, try_donemsel
+        FROM hisse_finansal_tablolari_bilanco_kalemleri
         WHERE hisse_senedi_kodu = '{ticker}'
-          AND tablo = 'ratios'
-        ORDER BY tarih DESC
-        LIMIT 50
+          AND (yil, ay) IN (
+            SELECT yil, ay FROM hisse_finansal_tablolari
+            WHERE hisse_senedi_kodu = '{ticker}'
+            ORDER BY yil DESC, ay DESC
+            LIMIT {periods}
+          )
+        ORDER BY yil DESC, ay DESC, satir_no ASC
         """
         rows = await self.query(sql)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+        return self._normalize_financials(rows)
+
+    async def get_cash_flow(self, ticker: str, periods: int = 8) -> pd.DataFrame:
+        """Fetch cash flow statement items for recent periods.
+
+        Real table: hisse_finansal_tablolari_nakit_akis_tablosu_kalemleri
+        Columns: hisse_senedi_kodu, yil, ay, satir_no, kalem, try_donemsel, try_ceyreklik, try_ttm
+        """
+        sql = f"""
+        SELECT yil, ay, kalem, try_donemsel
+        FROM hisse_finansal_tablolari_nakit_akis_tablosu_kalemleri
+        WHERE hisse_senedi_kodu = '{ticker}'
+          AND (yil, ay) IN (
+            SELECT yil, ay FROM hisse_finansal_tablolari
+            WHERE hisse_senedi_kodu = '{ticker}'
+            ORDER BY yil DESC, ay DESC
+            LIMIT {periods}
+          )
+        ORDER BY yil DESC, ay DESC, satir_no ASC
+        """
+        rows = await self.query(sql)
+        return self._normalize_financials(rows)
+
+    async def get_ratios(self, ticker: str, periods: int = 8) -> pd.DataFrame:
+        """Fetch financial ratios for recent periods.
+
+        Real table: hisse_finansal_tablolari_finansal_oranlari
+        Columns: hisse_senedi_kodu, yil, ay, satir_no, kategori, oran, deger
+        """
+        sql = f"""
+        SELECT yil, ay, kategori, oran, deger
+        FROM hisse_finansal_tablolari_finansal_oranlari
+        WHERE hisse_senedi_kodu = '{ticker}'
+          AND (yil, ay) IN (
+            SELECT yil, ay FROM hisse_finansal_tablolari
+            WHERE hisse_senedi_kodu = '{ticker}'
+            ORDER BY yil DESC, ay DESC
+            LIMIT {periods}
+          )
+        ORDER BY yil DESC, ay DESC, satir_no ASC
+        """
+        rows = await self.query(sql)
+        return self._normalize_ratios(rows)
+
+    async def get_analyst_targets(self, ticker: str) -> list[dict]:
+        """Fetch analyst target prices and recommendations.
+
+        Real table: hisse_senedi_araci_kurum_hedef_fiyatlari
+        """
+        sql = f"""
+        SELECT hf.araci_kurum_kodu,
+               ak.kisa_unvan,
+               hf.hedef_fiyat,
+               hf.tavsiye,
+               hf.yayin_tarihi_europe_istanbul
+        FROM hisse_senedi_araci_kurum_hedef_fiyatlari hf
+        LEFT JOIN araci_kurumlar ak ON hf.araci_kurum_kodu = ak.araci_kurum_kodu
+        WHERE hf.hisse_senedi_kodu = '{ticker}'
+        ORDER BY hf.yayin_tarihi_europe_istanbul DESC
+        LIMIT 20
+        """
+        rows = await self.query(sql)
+        return rows if rows else []
 
     async def get_dividends(self, ticker: str) -> pd.DataFrame:
-        sql = f"""
-        SELECT tarih, hisse_senedi_kodu, temettü_verimi, hisse_basina_temettü,
-               brüt_nakit_temettü, net_nakit_temettü
-        FROM temettüler
-        WHERE hisse_senedi_kodu = '{ticker}'
-        ORDER BY tarih DESC
-        """
-        rows = await self.query(sql)
-        return pd.DataFrame(rows) if rows else pd.DataFrame()
+        """Fetch dividend data — try the temettüler table, fall back gracefully."""
+        # Note: evofin may or may not have a dedicated dividends table.
+        # Try querying; if it fails, return empty.
+        try:
+            sql = f"""
+            SELECT tarih, hisse_senedi_kodu, temettü_verimi, hisse_basina_temettü,
+                   brüt_nakit_temettü, net_nakit_temettü
+            FROM temettüler
+            WHERE hisse_senedi_kodu = '{ticker}'
+            ORDER BY tarih DESC
+            LIMIT 20
+            """
+            rows = await self.query(sql)
+            return pd.DataFrame(rows) if rows else pd.DataFrame()
+        except Exception:
+            logger.debug("Dividends table not available for %s", ticker)
+            return pd.DataFrame()
 
     async def get_peer_tickers(self, ticker: str) -> list[str]:
         sql = f"""
@@ -136,6 +241,7 @@ class EvofinFetcher:
         JOIN hisse_senetleri h2 ON h1.sektor_id = h2.sektor_id
         WHERE h1.hisse_senedi_kodu = '{ticker}'
           AND h2.hisse_senedi_kodu != '{ticker}'
+        LIMIT 15
         """
         rows = await self.query(sql)
         return [r["hisse_senedi_kodu"] for r in rows] if rows else []
@@ -163,6 +269,7 @@ class EvofinFetcher:
         ratios = await self.get_ratios(ticker)
         dividends = await self.get_dividends(ticker)
         peers = await self.get_peer_tickers(ticker)
+        analyst_targets = await self.get_analyst_targets(ticker)
         activity = await self.get_activity_report(ticker)
 
         result = {
@@ -173,6 +280,7 @@ class EvofinFetcher:
             "ratios": ratios,
             "dividends": dividends,
             "peer_tickers": peers,
+            "analyst_targets": analyst_targets,
             "activity_report": activity,
         }
         set_cached(cache_key, result)

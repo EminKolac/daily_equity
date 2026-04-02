@@ -62,11 +62,11 @@ def create_report_compiler(llm=None):
             income_df = financial_data.get("income_statement")
             _rev_chart_done = False
             if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
-                # Extract quarterly revenue data from the income statement
-                rev_rows = income_df[income_df["kalem"] == "Hasılat"].sort_values("tarih")
-                ni_rows = income_df[income_df["kalem"] == "Net Dönem Karı/Zararı"].sort_values("tarih")
-                gross_profit_rows = income_df[income_df["kalem"].str.contains("Brüt", case=False, na=False)].sort_values("tarih")
-                ebitda_rows = income_df[income_df["kalem"].str.contains("FAVÖK|Esas Faaliyet", case=False, na=False)].sort_values("tarih")
+                # Extract quarterly revenue data (real evofin kalem names)
+                rev_rows = income_df[income_df["kalem"].isin(["Satış Gelirleri", "Hasılat", "Net Satışlar"])].sort_values("tarih")
+                ni_rows = income_df[income_df["kalem"].isin(["Dönem Net Karı (Zararı)", "Net Dönem Karı/Zararı"])].sort_values("tarih")
+                gross_profit_rows = income_df[income_df["kalem"].isin(["Brüt Kar (Zarar)", "Brüt Kâr (Zarar)"])].sort_values("tarih")
+                ebitda_rows = income_df[income_df["kalem"].str.contains("FAVÖK|Faaliyet Karı", case=False, na=False)].sort_values("tarih")
 
                 if not rev_rows.empty and len(rev_rows) >= 2:
                     dates = rev_rows["tarih"].astype(str).tolist()
@@ -114,7 +114,7 @@ def create_report_compiler(llm=None):
         try:
             income_df = financial_data.get("income_statement")
             if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
-                ni_rows = income_df[income_df["kalem"] == "Net Dönem Karı/Zararı"].sort_values("tarih")
+                ni_rows = income_df[income_df["kalem"].isin(["Dönem Net Karı (Zararı)", "Net Dönem Karı/Zararı"])].sort_values("tarih")
                 stock_info = price_data.get("stock_info", {})
                 shares_out = stock_info.get("sharesOutstanding", 0)
 
@@ -132,11 +132,11 @@ def create_report_compiler(llm=None):
         try:
             bs_df = financial_data.get("balance_sheet")
             if bs_df is not None and isinstance(bs_df, pd.DataFrame) and not bs_df.empty:
-                ca_rows = bs_df[bs_df["kalem"].str.contains("Dönen Varlıklar", case=False, na=False)].sort_values("tarih")
-                nca_rows = bs_df[bs_df["kalem"].str.contains("Duran Varlıklar", case=False, na=False)].sort_values("tarih")
-                cl_rows = bs_df[bs_df["kalem"].str.contains("Kısa Vadeli", case=False, na=False)].sort_values("tarih")
-                ncl_rows = bs_df[bs_df["kalem"].str.contains("Uzun Vadeli", case=False, na=False)].sort_values("tarih")
-                eq_rows = bs_df[bs_df["kalem"].str.contains("Özkaynaklar", case=False, na=False)].sort_values("tarih")
+                ca_rows = bs_df[bs_df["kalem"] == "Toplam Dönen Varlıklar"].sort_values("tarih")
+                nca_rows = bs_df[bs_df["kalem"] == "Toplam Duran Varlıklar"].sort_values("tarih")
+                cl_rows = bs_df[bs_df["kalem"] == "Toplam Kısa Vadeli Yükümlülükler"].sort_values("tarih")
+                ncl_rows = bs_df[bs_df["kalem"] == "Toplam Uzun Vadeli Yükümlülükler"].sort_values("tarih")
+                eq_rows = bs_df[bs_df["kalem"] == "Toplam Özkaynaklar"].sort_values("tarih")
 
                 if not ca_rows.empty and len(ca_rows) >= 2:
                     dates_bs = ca_rows["tarih"].astype(str).tolist()
