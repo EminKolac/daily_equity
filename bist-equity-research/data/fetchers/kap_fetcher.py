@@ -1,11 +1,16 @@
-"""KAP (Public Disclosure Platform) disclosures scraper."""
+"""KAP (Public Disclosure Platform) disclosures scraper.
+
+KAP uses a POST-based JSON API for disclosure queries. The endpoints below are
+derived from the public KAP website's AJAX calls.
+"""
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
-import pandas as pd
 import requests
-from bs4 import BeautifulSoup
+
+from data.cache_utils import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
@@ -19,48 +24,84 @@ class KAPFetcher:
         self.timeout = timeout
         self.session = requests.Session()
         self.session.headers.update({
-            "User-Agent": "Mozilla/5.0 (compatible; BISTResearch/1.0)",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Referer": "https://www.kap.org.tr/tr/bildirim-sorgu",
         })
 
     def get_disclosures(self, ticker: str, limit: int = 20) -> list[dict]:
-        """Fetch recent KAP disclosures for a ticker."""
-        url = f"{KAP_BASE}/tr/api/disclosures"
-        params = {
-            "companyCode": ticker,
-            "limit": limit,
+        """Fetch recent KAP disclosures using the POST-based query API."""
+        url = f"{KAP_BASE}/tr/api/memberDisclosureQuery"
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=90)
+
+        payload = {
+            "fromDate": start_date.strftime("%Y-%m-%d"),
+            "toDate": end_date.strftime("%Y-%m-%d"),
+            "year": "",
+            "ppiList": [],
+            "bdkReviewStatusList": [],
+            "disclosureClass": [],
+            "disclosureType": [],
+            "subjectList": [],
+            "mpiList": [],
+            "isLate": "",
+            "term": ticker,
+            "memberOidList": [],
+            "hideMy498": "",
+            "assignedMemberOid": "",
         }
+
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
+            resp = self.session.post(url, json=payload, timeout=self.timeout)
             resp.raise_for_status()
             data = resp.json()
+
             disclosures = []
-            for item in data if isinstance(data, list) else data.get("disclosures", []):
+            items = data if isinstance(data, list) else data.get("disclosures", [])
+            for item in items[:limit]:
                 disclosures.append({
-                    "date": item.get("publishDate", ""),
-                    "title": item.get("title", ""),
-                    "type": item.get("type", ""),
-                    "summary": item.get("summary", ""),
+                    "date": item.get("publishDate", item.get("disclosureDate", "")),
+                    "title": item.get("title", item.get("subject", "")),
+                    "type": item.get("disclosureType", item.get("type", "")),
+                    "summary": item.get("summary", item.get("title", "")),
                 })
             return disclosures
         except Exception as e:
-            logger.error("KAP fetch failed for %s: %s", ticker, e)
+            logger.error("KAP disclosures fetch failed for %s: %s", ticker, e)
             return []
 
     def get_insider_trades(self, ticker: str) -> list[dict]:
-        """Fetch insider trading disclosures."""
-        url = f"{KAP_BASE}/tr/api/insider-trading"
-        params = {"companyCode": ticker, "limit": 10}
+        """Fetch insider trading disclosures via KAP."""
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
-            return resp.json() if isinstance(resp.json(), list) else []
+            disclosures = self.get_disclosures(ticker, limit=50)
+            insider_keywords = ["İçsel Bilgi", "Pay Alım", "Pay Satım", "Yönetici İşlemleri"]
+            insider_trades = [
+                d for d in disclosures
+                if any(kw.lower() in (d.get("title", "") + d.get("type", "")).lower()
+                       for kw in insider_keywords)
+            ]
+            return insider_trades[:10]
         except Exception as e:
-            logger.error("KAP insider trades failed for %s: %s", ticker, e)
+            logger.error("KAP insider trades filter failed for %s: %s", ticker, e)
             return []
 
     def fetch_all(self, ticker: str) -> dict[str, Any]:
+        cache_key = f"kap_{ticker}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching KAP disclosures for %s", ticker)
-        return {
-            "kap_disclosures": self.get_disclosures(ticker),
-            "kap_insider_trades": self.get_insider_trades(ticker),
+        disclosures = self.get_disclosures(ticker)
+        insider_trades = self.get_insider_trades(ticker)
+        result = {
+            "kap_disclosures": disclosures,
+            "kap_insider_trades": insider_trades,
         }
+        set_cached(cache_key, result)
+        return result

@@ -1,0 +1,84 @@
+name: Weekly BIST Equity Research Reports
+
+on:
+  schedule:
+    # Every Sunday at 07:00 UTC = 10:00 AM Istanbul time (UTC+3)
+    - cron: '0 7 * * 0'
+  workflow_dispatch:  # Allow manual trigger
+
+env:
+  PYTHON_VERSION: '3.11'
+
+jobs:
+  generate-reports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120  # 2 hours max for all 11 tickers
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Install dependencies
+        working-directory: bist-equity-research
+        run: |
+          pip install --upgrade pip setuptools wheel
+          pip install -r requirements.txt
+
+      - name: Create .env file
+        working-directory: bist-equity-research
+        run: |
+          cat <<EOF > .env
+          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
+          TCMB_EVDS_API_KEY=${{ secrets.TCMB_EVDS_API_KEY }}
+          APIFY_API_TOKEN=${{ secrets.APIFY_API_TOKEN }}
+          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
+          SMTP_PORT=${{ secrets.SMTP_PORT }}
+          SMTP_USER=${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
+          REPORT_RECIPIENT=mehmetemin.kolac@tvf.com.tr
+          EOF
+
+      - name: Generate reports for all 11 tickers
+        working-directory: bist-equity-research
+        run: |
+          python main.py --all --send-email
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TCMB_EVDS_API_KEY: ${{ secrets.TCMB_EVDS_API_KEY }}
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          REPORT_RECIPIENT: mehmetemin.kolac@tvf.com.tr
+
+      - name: Upload reports as artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equity-reports-${{ github.run_number }}
+          path: bist-equity-research/reports/*.pdf
+          retention-days: 90
+
+      - name: Report generation summary
+        if: always()
+        working-directory: bist-equity-research
+        run: |
+          echo "## Report Generation Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Ticker | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+          for ticker in THYAO TCELL TTKOM HALKB KRDMD SISE ASELS TUPRS EREGL SAHOL BIMAS; do
+            if ls reports/${ticker}_report_*.pdf 1>/dev/null 2>&1; then
+              echo "| $ticker | Generated |" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "| $ticker | Failed |" >> $GITHUB_STEP_SUMMARY
+            fi
+          done
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Reports emailed to: mehmetemin.kolac@tvf.com.tr" >> $GITHUB_STEP_SUMMARY

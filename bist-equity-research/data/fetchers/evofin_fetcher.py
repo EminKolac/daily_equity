@@ -13,6 +13,8 @@ from typing import Any
 
 import pandas as pd
 
+from data.cache_utils import get_cached, set_cached
+
 logger = logging.getLogger(__name__)
 
 
@@ -149,6 +151,10 @@ class EvofinFetcher:
 
     async def fetch_all(self, ticker: str) -> dict[str, Any]:
         """Fetch all data for a given ticker."""
+        cache_key = f"evofin_{ticker}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching evofin data for %s", ticker)
         profile = await self.get_company_profile(ticker)
         income = await self.get_income_statement(ticker)
@@ -159,7 +165,7 @@ class EvofinFetcher:
         peers = await self.get_peer_tickers(ticker)
         activity = await self.get_activity_report(ticker)
 
-        return {
+        result = {
             "company_profile": profile,
             "income_statement": income,
             "balance_sheet": balance,
@@ -169,3 +175,5 @@ class EvofinFetcher:
             "peer_tickers": peers,
             "activity_report": activity,
         }
+        set_cached(cache_key, result)
+        return result

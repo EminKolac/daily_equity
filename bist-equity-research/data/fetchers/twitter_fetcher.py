@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from config.settings import APIFY_API_TOKEN
+from data.cache_utils import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +100,17 @@ class TwitterFetcher:
         return tweets
 
     def fetch_all(self, ticker: str) -> dict[str, Any]:
+        cache_key = f"twitter_{ticker}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching Twitter data for %s via Apify", ticker)
         search_tweets = self.search_tweets(ticker)
         fintwit_tweets = self.scrape_fintwit_accounts(ticker)
         all_tweets = search_tweets + fintwit_tweets
-        return {
+        result = {
             "twitter_tweets": all_tweets,
             "twitter_count": len(all_tweets),
         }
+        set_cached(cache_key, result)
+        return result

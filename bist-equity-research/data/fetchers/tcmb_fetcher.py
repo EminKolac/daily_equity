@@ -8,6 +8,7 @@ import pandas as pd
 import requests
 
 from config.settings import TCMB_EVDS_API_KEY
+from data.cache_utils import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
@@ -85,8 +86,14 @@ class TCMBFetcher:
         return latest
 
     def fetch_all(self) -> dict[str, Any]:
+        cache_key = "tcmb_macro"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching TCMB macro data")
-        return {
+        result = {
             "macro_series": self.get_macro_indicators(),
             "macro_latest": self.get_latest_values(),
         }
+        set_cached(cache_key, result)
+        return result

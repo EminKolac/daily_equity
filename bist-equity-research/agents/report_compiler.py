@@ -57,20 +57,101 @@ def create_report_compiler(llm=None):
         except Exception as e:
             logger.error("Candlestick chart failed: %s", e)
 
-        # 3. Revenue & Margins (placeholder data from fundamental analysis)
+        # 3. Revenue & Margins (real data from income_statement)
         try:
-            # Build from available data
-            rev = fundamental.get("revenue_analysis", {}).get("revenue", 0)
-            if rev:
-                dates = ["Q1'24", "Q2'24", "Q3'24", "Q4'24", "Q1'25", "Q2'25", "Q3'25", "Q4'25"]
-                revenues = [rev * (0.85 + 0.05 * i) for i in range(8)]
-                gm = [30 + i * 0.5 for i in range(8)]
-                em = [20 + i * 0.3 for i in range(8)]
-                nm_val = fundamental.get("margin_analysis", {}).get("net_margin", 10)
-                nm = [nm_val - 2 + i * 0.5 for i in range(8)]
-                charts["revenue_margins"] = revenue_margins_chart(dates, revenues, gm, em, nm, ticker)
+            income_df = financial_data.get("income_statement")
+            _rev_chart_done = False
+            if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
+                # Extract quarterly revenue data from the income statement
+                rev_rows = income_df[income_df["kalem"] == "Hasılat"].sort_values("tarih")
+                ni_rows = income_df[income_df["kalem"] == "Net Dönem Karı/Zararı"].sort_values("tarih")
+                gross_profit_rows = income_df[income_df["kalem"].str.contains("Brüt", case=False, na=False)].sort_values("tarih")
+                ebitda_rows = income_df[income_df["kalem"].str.contains("FAVÖK|Esas Faaliyet", case=False, na=False)].sort_values("tarih")
+
+                if not rev_rows.empty and len(rev_rows) >= 2:
+                    dates = rev_rows["tarih"].astype(str).tolist()
+                    revenues = [float(v) for v in rev_rows["deger"].tolist()]
+
+                    # Compute gross margin % if gross profit available
+                    if not gross_profit_rows.empty and len(gross_profit_rows) == len(rev_rows):
+                        gm = [(float(gp) / float(r)) * 100 if float(r) != 0 else 0
+                               for gp, r in zip(gross_profit_rows["deger"], rev_rows["deger"])]
+                    else:
+                        gm = [0.0] * len(dates)
+
+                    # EBITDA margin %
+                    if not ebitda_rows.empty and len(ebitda_rows) == len(rev_rows):
+                        em = [(float(e) / float(r)) * 100 if float(r) != 0 else 0
+                               for e, r in zip(ebitda_rows["deger"], rev_rows["deger"])]
+                    else:
+                        em = [0.0] * len(dates)
+
+                    # Net margin %
+                    if not ni_rows.empty and len(ni_rows) == len(rev_rows):
+                        nm = [(float(n) / float(r)) * 100 if float(r) != 0 else 0
+                               for n, r in zip(ni_rows["deger"], rev_rows["deger"])]
+                    else:
+                        nm = [0.0] * len(dates)
+
+                    charts["revenue_margins"] = revenue_margins_chart(dates, revenues, gm, em, nm, ticker)
+                    _rev_chart_done = True
+
+            # Fallback: synthetic data from fundamental analysis
+            if not _rev_chart_done:
+                rev = fundamental.get("revenue_analysis", {}).get("revenue", 0)
+                if rev:
+                    dates = ["Q1'24", "Q2'24", "Q3'24", "Q4'24", "Q1'25", "Q2'25", "Q3'25", "Q4'25"]
+                    revenues = [rev * (0.85 + 0.05 * i) for i in range(8)]
+                    gm = [30 + i * 0.5 for i in range(8)]
+                    em = [20 + i * 0.3 for i in range(8)]
+                    nm_val = fundamental.get("margin_analysis", {}).get("net_margin", 10)
+                    nm = [nm_val - 2 + i * 0.5 for i in range(8)]
+                    charts["revenue_margins"] = revenue_margins_chart(dates, revenues, gm, em, nm, ticker)
         except Exception as e:
             logger.error("Revenue margins chart failed: %s", e)
+
+        # 3b. EPS & P/E chart (real data from income_statement)
+        try:
+            income_df = financial_data.get("income_statement")
+            if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
+                ni_rows = income_df[income_df["kalem"] == "Net Dönem Karı/Zararı"].sort_values("tarih")
+                stock_info = price_data.get("stock_info", {})
+                shares_out = stock_info.get("sharesOutstanding", 0)
+
+                if not ni_rows.empty and len(ni_rows) >= 2 and shares_out:
+                    dates_eps = ni_rows["tarih"].astype(str).tolist()
+                    eps_vals = [float(v) / float(shares_out) for v in ni_rows["deger"].tolist()]
+                    current_price = float(stock_info.get("currentPrice") or
+                                          stock_info.get("regularMarketPrice") or 1)
+                    pe_vals = [current_price / e if e != 0 else 0 for e in eps_vals]
+                    charts["eps_pe"] = eps_pe_chart(dates_eps, eps_vals, pe_vals, ticker)
+        except Exception as e:
+            logger.error("EPS/PE chart failed: %s", e)
+
+        # 3c. Balance sheet chart (real data from balance_sheet)
+        try:
+            bs_df = financial_data.get("balance_sheet")
+            if bs_df is not None and isinstance(bs_df, pd.DataFrame) and not bs_df.empty:
+                ca_rows = bs_df[bs_df["kalem"].str.contains("Dönen Varlıklar", case=False, na=False)].sort_values("tarih")
+                nca_rows = bs_df[bs_df["kalem"].str.contains("Duran Varlıklar", case=False, na=False)].sort_values("tarih")
+                cl_rows = bs_df[bs_df["kalem"].str.contains("Kısa Vadeli", case=False, na=False)].sort_values("tarih")
+                ncl_rows = bs_df[bs_df["kalem"].str.contains("Uzun Vadeli", case=False, na=False)].sort_values("tarih")
+                eq_rows = bs_df[bs_df["kalem"].str.contains("Özkaynaklar", case=False, na=False)].sort_values("tarih")
+
+                if not ca_rows.empty and len(ca_rows) >= 2:
+                    dates_bs = ca_rows["tarih"].astype(str).tolist()
+                    n = len(dates_bs)
+                    current_assets = [float(v) for v in ca_rows["deger"].tolist()]
+                    non_current_assets = [float(v) for v in nca_rows["deger"].tolist()[:n]] if not nca_rows.empty else [0.0] * n
+                    current_liabilities = [float(v) for v in cl_rows["deger"].tolist()[:n]] if not cl_rows.empty else [0.0] * n
+                    non_current_liabilities = [float(v) for v in ncl_rows["deger"].tolist()[:n]] if not ncl_rows.empty else [0.0] * n
+                    equity = [float(v) for v in eq_rows["deger"].tolist()[:n]] if not eq_rows.empty else [0.0] * n
+                    charts["balance_sheet"] = balance_sheet_chart(
+                        dates_bs, current_assets, non_current_assets,
+                        current_liabilities, non_current_liabilities, equity, ticker
+                    )
+        except Exception as e:
+            logger.error("Balance sheet chart failed: %s", e)
 
         # 4. Football field
         try:
@@ -108,16 +189,49 @@ def create_report_compiler(llm=None):
         except Exception as e:
             logger.error("Radar chart failed: %s", e)
 
-        # 7. Cash flow waterfall
+        # 7. Cash flow waterfall (real data from cash_flow statement)
         try:
-            rev = fundamental.get("revenue_analysis", {}).get("revenue", 0)
-            ni = fundamental.get("revenue_analysis", {}).get("net_income", 0)
-            if rev > 0:
-                ocf = ni * 1.3 if ni else rev * 0.12
-                capex = -abs(rev * 0.05)
-                fcf = ocf + capex
-                divs = abs(ni * 0.3) if ni else 0
-                charts["cash_flow_waterfall"] = cash_flow_waterfall(ocf, capex, fcf, divs, ticker)
+            cf_df = financial_data.get("cash_flow")
+            _cf_chart_done = False
+            if cf_df is not None and isinstance(cf_df, pd.DataFrame) and not cf_df.empty:
+                latest_date = cf_df["tarih"].max()
+                latest_cf = cf_df[cf_df["tarih"] == latest_date]
+
+                ocf_rows = latest_cf[latest_cf["kalem"].str.contains("İşletme Faaliyetlerinden", case=False, na=False)]
+                capex_rows = latest_cf[latest_cf["kalem"].str.contains("Yatırım Faaliyetlerinden", case=False, na=False)]
+                fin_rows = latest_cf[latest_cf["kalem"].str.contains("Finansman Faaliyetlerinden", case=False, na=False)]
+
+                if not ocf_rows.empty:
+                    ocf = float(ocf_rows["deger"].iloc[0])
+                    capex = float(capex_rows["deger"].iloc[0]) if not capex_rows.empty else 0
+                    fcf = ocf + capex  # investing CF is typically negative
+                    divs = abs(float(fin_rows["deger"].iloc[0])) if not fin_rows.empty else 0
+                    charts["cash_flow_waterfall"] = cash_flow_waterfall(ocf, capex, fcf, divs, ticker)
+                    _cf_chart_done = True
+
+            # Fallback: Yahoo Finance data
+            if not _cf_chart_done:
+                stock_info = price_data.get("stock_info", {})
+                ocf = stock_info.get("operatingCashflow", 0)
+                fcf = stock_info.get("freeCashflow", 0)
+                if ocf:
+                    ocf = float(ocf)
+                    fcf = float(fcf) if fcf else 0
+                    capex = fcf - ocf  # capex = FCF - OCF
+                    divs = 0  # Not reliably available from Yahoo
+                    charts["cash_flow_waterfall"] = cash_flow_waterfall(ocf, capex, fcf, divs, ticker)
+                    _cf_chart_done = True
+
+            # Final fallback: synthetic from fundamental analysis
+            if not _cf_chart_done:
+                rev = fundamental.get("revenue_analysis", {}).get("revenue", 0)
+                ni = fundamental.get("revenue_analysis", {}).get("net_income", 0)
+                if rev > 0:
+                    ocf = ni * 1.3 if ni else rev * 0.12
+                    capex = -abs(rev * 0.05)
+                    fcf = ocf + capex
+                    divs = abs(ni * 0.3) if ni else 0
+                    charts["cash_flow_waterfall"] = cash_flow_waterfall(ocf, capex, fcf, divs, ticker)
         except Exception as e:
             logger.error("Cash flow waterfall chart failed: %s", e)
 

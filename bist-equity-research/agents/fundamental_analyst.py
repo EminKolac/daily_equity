@@ -22,7 +22,10 @@ def _safe_float(val, default=0.0):
 
 
 def _extract_financials(financial_data: dict) -> dict:
-    """Extract key financial metrics from raw data."""
+    """Extract key financial metrics from raw data.
+
+    Handles both evofin MCP data (kalem/deger format) and İş Yatırım data.
+    """
     income = financial_data.get("income_statement")
     balance = financial_data.get("balance_sheet")
     cashflow = financial_data.get("cash_flow")
@@ -30,17 +33,119 @@ def _extract_financials(financial_data: dict) -> dict:
 
     metrics = {}
 
-    # Attempt to pivot and extract latest values
+    # Extract from evofin-style DataFrames (kalem/deger columns)
     for label, df in [("income", income), ("balance", balance), ("cashflow", cashflow)]:
         if df is None or (isinstance(df, pd.DataFrame) and df.empty):
             continue
-        if isinstance(df, pd.DataFrame) and "kalem" in df.columns and "deger" in df.columns:
+        if not isinstance(df, pd.DataFrame):
+            continue
+        if "kalem" in df.columns and "deger" in df.columns:
             latest_date = df["tarih"].max() if "tarih" in df.columns else None
             if latest_date is not None:
                 latest = df[df["tarih"] == latest_date]
                 for _, row in latest.iterrows():
-                    key = f"{label}_{row['kalem']}" if "kalem" in row.index else ""
-                    metrics[key] = _safe_float(row.get("deger"))
+                    kalem = row.get("kalem", "")
+                    if kalem:
+                        metrics[f"{label}_{kalem}"] = _safe_float(row.get("deger"))
+
+    # Also extract quarterly time series for trend analysis
+    if isinstance(income, pd.DataFrame) and not income.empty and "kalem" in income.columns:
+        try:
+            pivoted = income.pivot_table(
+                index="tarih", columns="kalem", values="deger", aggfunc="first"
+            ).sort_index()
+            if not pivoted.empty:
+                # Revenue trend
+                for col_name in ["Hasılat", "Net Satışlar", "Satış Gelirleri"]:
+                    if col_name in pivoted.columns:
+                        rev_series = pivoted[col_name].dropna()
+                        if len(rev_series) >= 2:
+                            metrics["revenue_yoy_growth"] = float(
+                                (rev_series.iloc[-1] / rev_series.iloc[-5] - 1) * 100
+                            ) if len(rev_series) >= 5 else 0
+                            metrics["revenue_qoq_growth"] = float(
+                                (rev_series.iloc[-1] / rev_series.iloc[-2] - 1) * 100
+                            )
+                        break
+                # Gross margin trend
+                for rev_col in ["Hasılat", "Net Satışlar", "Satış Gelirleri"]:
+                    for cogs_col in ["Satışların Maliyeti (-)", "Satışların Maliyeti"]:
+                        if rev_col in pivoted.columns and cogs_col in pivoted.columns:
+                            rev_s = pivoted[rev_col].dropna()
+                            cogs_s = pivoted[cogs_col].dropna()
+                            if len(rev_s) > 0 and len(cogs_s) > 0:
+                                latest_rev = float(rev_s.iloc[-1])
+                                latest_cogs = abs(float(cogs_s.iloc[-1]))
+                                if latest_rev > 0:
+                                    metrics["gross_margin_pct"] = (latest_rev - latest_cogs) / latest_rev * 100
+                            break
+                    else:
+                        continue
+                    break
+        except Exception:
+            pass
+
+    # Extract balance sheet specifics for better Piotroski/Altman inputs
+    if isinstance(balance, pd.DataFrame) and not balance.empty and "kalem" in balance.columns:
+        try:
+            latest_date = balance["tarih"].max()
+            latest_bs = balance[balance["tarih"] == latest_date]
+            bs_items = dict(zip(latest_bs["kalem"], latest_bs["deger"].apply(_safe_float)))
+
+            # Map common Turkish balance sheet items
+            item_map = {
+                "current_assets": ["Dönen Varlıklar"],
+                "non_current_assets": ["Duran Varlıklar"],
+                "total_assets": ["Toplam Varlıklar", "TOPLAM VARLIKLAR"],
+                "current_liabilities": ["Kısa Vadeli Yükümlülükler"],
+                "non_current_liabilities": ["Uzun Vadeli Yükümlülükler"],
+                "total_equity": ["Özkaynaklar", "Ana Ortaklık Payları"],
+                "total_liabilities": ["Toplam Yükümlülükler"],
+                "retained_earnings": ["Geçmiş Yıllar Kârları/Zararları"],
+                "paid_in_capital": ["Ödenmiş Sermaye"],
+                "trade_receivables": ["Ticari Alacaklar"],
+                "long_term_debt": ["Finansal Borçlar"],
+            }
+            for metric_key, tr_names in item_map.items():
+                for name in tr_names:
+                    if name in bs_items:
+                        metrics[f"bs_{metric_key}"] = bs_items[name]
+                        break
+
+            # Prior period for Piotroski comparison
+            dates = sorted(balance["tarih"].unique())
+            if len(dates) >= 2:
+                prior_date = dates[-2]
+                prior_bs = balance[balance["tarih"] == prior_date]
+                prior_items = dict(zip(prior_bs["kalem"], prior_bs["deger"].apply(_safe_float)))
+                for metric_key, tr_names in item_map.items():
+                    for name in tr_names:
+                        if name in prior_items:
+                            metrics[f"bs_prior_{metric_key}"] = prior_items[name]
+                            break
+        except Exception:
+            pass
+
+    # Extract cash flow items
+    if isinstance(cashflow, pd.DataFrame) and not cashflow.empty and "kalem" in cashflow.columns:
+        try:
+            latest_date = cashflow["tarih"].max()
+            latest_cf = cashflow[cashflow["tarih"] == latest_date]
+            cf_items = dict(zip(latest_cf["kalem"], latest_cf["deger"].apply(_safe_float)))
+            cf_map = {
+                "operating_cf": ["İşletme Faaliyetlerinden Nakit Akışları"],
+                "investing_cf": ["Yatırım Faaliyetlerinden Nakit Akışları"],
+                "financing_cf": ["Finansman Faaliyetlerinden Nakit Akışları"],
+                "capex": ["Maddi ve Maddi Olmayan Duran Varlık Alımları",
+                          "Maddi Duran Varlık Alımından Kaynaklanan Nakit Çıkışları"],
+            }
+            for metric_key, tr_names in cf_map.items():
+                for name in tr_names:
+                    if name in cf_items:
+                        metrics[f"cf_{metric_key}"] = cf_items[name]
+                        break
+        except Exception:
+            pass
 
     return metrics
 
@@ -68,20 +173,43 @@ def create_fundamental_analyst(llm=None):
                                   company_profile.get("piyasa_degeri"))
         shares = market_cap / current_price if current_price > 0 else 1
 
-        # Extract key values (best effort from available data)
-        net_income = _safe_float(metrics.get("income_Net Dönem Karı/Zararı") or
-                                  stock_info.get("netIncomeToCommon"))
-        revenue = _safe_float(metrics.get("income_Hasılat") or
-                               stock_info.get("totalRevenue"))
-        total_assets = _safe_float(metrics.get("balance_Toplam Varlıklar") or
-                                    stock_info.get("totalAssets"))
-        total_equity = _safe_float(metrics.get("balance_Özkaynaklar") or
-                                    stock_info.get("totalStockholderEquity"))
-        total_liabilities = total_assets - total_equity if total_assets and total_equity else 0
-        operating_cf = _safe_float(metrics.get("cashflow_İşletme Faaliyetlerinden Nakit Akışları") or
-                                    stock_info.get("operatingCashflow"))
+        # Extract key values — prefer evofin data, fallback to Yahoo stock_info
+        net_income = _safe_float(
+            metrics.get("income_Net Dönem Karı/Zararı") or
+            metrics.get("income_Net Dönem Karı") or
+            stock_info.get("netIncomeToCommon")
+        )
+        revenue = _safe_float(
+            metrics.get("income_Hasılat") or
+            metrics.get("income_Net Satışlar") or
+            metrics.get("income_Satış Gelirleri") or
+            stock_info.get("totalRevenue")
+        )
+        total_assets = _safe_float(
+            metrics.get("bs_total_assets") or
+            metrics.get("balance_Toplam Varlıklar") or
+            stock_info.get("totalAssets")
+        )
+        total_equity = _safe_float(
+            metrics.get("bs_total_equity") or
+            metrics.get("balance_Özkaynaklar") or
+            stock_info.get("totalStockholderEquity")
+        )
+        total_liabilities = _safe_float(
+            metrics.get("bs_total_liabilities") or
+            (total_assets - total_equity if total_assets and total_equity else 0)
+        )
+        operating_cf = _safe_float(
+            metrics.get("cf_operating_cf") or
+            metrics.get("cashflow_İşletme Faaliyetlerinden Nakit Akışları") or
+            stock_info.get("operatingCashflow")
+        )
         ebit = _safe_float(stock_info.get("ebitda", 0))
-        fcf = _safe_float(stock_info.get("freeCashflow", operating_cf * 0.7))
+        capex = _safe_float(metrics.get("cf_capex", 0))
+        fcf = _safe_float(
+            stock_info.get("freeCashflow") or
+            (operating_cf + capex if operating_cf and capex else operating_cf * 0.7 if operating_cf else 0)
+        )
 
         # Valuation
         pe = _safe_float(stock_info.get("trailingPE"))
@@ -145,28 +273,50 @@ def create_fundamental_analyst(llm=None):
         # DuPont
         dupont = dupont_decomposition(net_income, revenue, total_assets, total_equity)
 
+        # Use real balance sheet data for health scoring where available
+        current_assets = _safe_float(metrics.get("bs_current_assets", total_assets * 0.4))
+        current_liabilities = _safe_float(metrics.get("bs_current_liabilities", total_liabilities * 0.5))
+        long_term_debt = _safe_float(metrics.get("bs_long_term_debt", total_liabilities * 0.5))
+        retained_earnings = _safe_float(metrics.get("bs_retained_earnings", total_equity * 0.5))
+        receivables = _safe_float(metrics.get("bs_trade_receivables", total_assets * 0.15))
+
+        # Prior period data (use real if available, else estimate)
+        prior_total_assets = _safe_float(metrics.get("bs_prior_total_assets", total_assets * 0.95))
+        prior_long_term_debt = _safe_float(metrics.get("bs_prior_long_term_debt", long_term_debt * 1.05))
+        prior_current_assets = _safe_float(metrics.get("bs_prior_current_assets", current_assets * 0.95))
+        prior_current_liabilities = _safe_float(metrics.get("bs_prior_current_liabilities", current_liabilities * 0.95))
+        prior_receivables = _safe_float(metrics.get("bs_prior_trade_receivables", receivables * 0.95))
+
+        current_ratio_current = current_assets / current_liabilities if current_liabilities else 1.0
+        current_ratio_prior = prior_current_assets / prior_current_liabilities if prior_current_liabilities else 1.0
+        roa_current = net_income / total_assets if total_assets else 0
+        roa_prior = net_income / prior_total_assets if prior_total_assets else 0
+        gross_margin_current = metrics.get("gross_margin_pct", 30) / 100
+        gross_margin_prior = gross_margin_current * 0.97  # Slight conservative fallback
+
         # Piotroski F-Score
         piotroski = piotroski_f_score({
             "net_income": net_income,
             "operating_cf": operating_cf,
-            "roa_current": net_income / total_assets if total_assets else 0,
-            "roa_prior": net_income / total_assets * 0.95 if total_assets else 0,
-            "long_term_debt_current": total_liabilities * 0.5,
-            "long_term_debt_prior": total_liabilities * 0.55,
-            "current_ratio_current": 1.2,
-            "current_ratio_prior": 1.1,
+            "roa_current": roa_current,
+            "roa_prior": roa_prior,
+            "long_term_debt_current": long_term_debt,
+            "long_term_debt_prior": prior_long_term_debt,
+            "current_ratio_current": current_ratio_current,
+            "current_ratio_prior": current_ratio_prior,
             "shares_current": shares,
             "shares_prior": shares,
-            "gross_margin_current": 0.30,
-            "gross_margin_prior": 0.28,
+            "gross_margin_current": gross_margin_current,
+            "gross_margin_prior": gross_margin_prior,
             "asset_turnover_current": revenue / total_assets if total_assets else 0,
-            "asset_turnover_prior": revenue / total_assets * 0.95 if total_assets else 0,
+            "asset_turnover_prior": revenue / prior_total_assets if prior_total_assets else 0,
         })
 
         # Altman Z-Score
+        working_capital = current_assets - current_liabilities
         altman = altman_z_score({
-            "working_capital": total_assets * 0.2,
-            "retained_earnings": total_equity * 0.5,
+            "working_capital": working_capital,
+            "retained_earnings": retained_earnings,
             "ebit": ebit,
             "market_cap": market_cap,
             "total_liabilities": total_liabilities,
@@ -179,8 +329,8 @@ def create_fundamental_analyst(llm=None):
             operating_cf=operating_cf,
             net_income=net_income,
             total_assets=total_assets,
-            receivables_current=total_assets * 0.15,
-            receivables_prior=total_assets * 0.14,
+            receivables_current=receivables,
+            receivables_prior=prior_receivables,
             revenue=revenue,
         )
 

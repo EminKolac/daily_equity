@@ -6,6 +6,8 @@ from typing import Any
 import pandas as pd
 import yfinance as yf
 
+from data.cache_utils import get_cached, set_cached
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,11 +56,17 @@ class YahooFetcher:
             return pd.DataFrame()
 
     def fetch_all(self, ticker: str) -> dict[str, Any]:
+        cache_key = f"yahoo_{ticker}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching Yahoo data for %s", ticker)
-        return {
+        result = {
             "price_history_2y": self.get_price_history(ticker, "2y"),
             "price_history_5y": self.get_price_history(ticker, "5y"),
             "stock_info": self.get_stock_info(ticker),
             "benchmark_2y": self.get_benchmark("2y"),
             "yahoo_dividends": self.get_dividends(ticker),
         }
+        set_cached(cache_key, result)
+        return result

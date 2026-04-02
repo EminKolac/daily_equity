@@ -8,6 +8,8 @@ from typing import Any
 import pandas as pd
 import requests
 
+from data.cache_utils import get_cached, set_cached
+
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://www.isyatirim.com.tr/_layouts/15/Isyatirim.Website/Common/Data.aspx"
@@ -86,9 +88,15 @@ class IsYatirimFetcher:
             return {}
 
     def fetch_all(self, ticker: str) -> dict[str, Any]:
+        cache_key = f"isyatirim_{ticker}"
+        cached = get_cached(cache_key)
+        if cached is not None:
+            return cached
         logger.info("Fetching İş Yatırım data for %s", ticker)
-        return {
+        result = {
             "isyatirim_prices": self.get_historical_prices(ticker),
             "isyatirim_financials": self.get_financials(ticker),
             "isyatirim_coverage": self.get_analyst_coverage(ticker),
         }
+        set_cached(cache_key, result)
+        return result

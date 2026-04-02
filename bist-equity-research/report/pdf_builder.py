@@ -67,18 +67,34 @@ def _build_cover_page(
     fundamental = state.get("fundamental_analysis", {})
     valuation = fundamental.get("valuation", {})
 
-    # Cover background block
-    elements.append(Spacer(1, 30))
+    # Cover header block — dark navy background with white text
+    elements.append(Spacer(1, 10))
 
-    # Company name and ticker
-    elements.append(Paragraph(
+    available_width = PAGE_WIDTH - 2 * MARGIN
+
+    title_para = Paragraph(
         f"{ticker_meta.get('name', ticker)}",
         styles["ReportTitle"]
-    ))
-    elements.append(Paragraph(
+    )
+    subtitle_para = Paragraph(
         f"BIST: {ticker} | {ticker_meta.get('sector', '')} | {state.get('report_date', '')}",
         styles["ReportSubtitle"]
-    ))
+    )
+
+    header_table = Table(
+        [[title_para], [subtitle_para]],
+        colWidths=[available_width],
+    )
+    header_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), PRIMARY),
+        ("LEFTPADDING", (0, 0), (-1, -1), 16),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 16),
+        ("TOPPADDING", (0, 0), (0, 0), 20),
+        ("BOTTOMPADDING", (-1, -1), (-1, -1), 18),
+        ("TOPPADDING", (0, 1), (0, 1), 0),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+    ]))
+    elements.append(header_table)
     elements.append(Spacer(1, 15))
 
     # Recommendation box
