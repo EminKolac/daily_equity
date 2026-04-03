@@ -13,11 +13,16 @@ Real evofin schema (validated April 2026):
   - hisse_senedi_araci_kurum_hedef_fiyatlari: analyst target prices
   - mumlar_gunluk_gh: daily OHLCV candles
 
+MCP response format:
+  {"row_count": N, "table": "| col1 | col2 |\n| --- | --- |\n| val1 | val2 |", "notes": [], "canonical_sql": "..."}
+  The 'table' field is a markdown table string that must be parsed into list[dict].
+
 All financial item tables use: hisse_senedi_kodu, yil, ay, kalem, try_donemsel
 Output is normalized to: tarih (YYYY-MM), kalem, deger — for downstream compatibility.
 """
 
 import logging
+import re
 from typing import Any
 
 import pandas as pd
@@ -27,43 +32,120 @@ from data.cache_utils import get_cached, set_cached
 logger = logging.getLogger(__name__)
 
 
+def _parse_markdown_table(response: Any) -> list[dict]:
+    """Parse evofin MCP response into list of dicts.
+
+    The MCP returns either:
+      1. A dict with {"row_count": N, "table": "markdown string", ...}
+      2. A raw markdown table string
+      3. Already a list[dict] (pass through)
+    """
+    if isinstance(response, list):
+        return response
+
+    if isinstance(response, str):
+        table_str = response
+    elif isinstance(response, dict):
+        if "table" in response:
+            table_str = response["table"]
+        else:
+            return [response]
+    else:
+        logger.warning("Unexpected MCP response type: %s", type(response))
+        return []
+
+    if not table_str or not isinstance(table_str, str):
+        return []
+
+    lines = [line.strip() for line in table_str.strip().split("\n") if line.strip()]
+
+    if len(lines) < 3:
+        return []
+
+    # Parse header row: "| col1 | col2 | col3 |"
+    header_line = lines[0]
+    headers = [h.strip() for h in header_line.split("|") if h.strip()]
+
+    # Skip separator row (line[1]): "| --- | --- | --- |"
+    # Parse data rows starting from line[2]
+    rows = []
+    for line in lines[2:]:
+        values = [v.strip() for v in line.split("|") if v.strip() != ""]
+        # Handle lines that are just "| |" separators
+        if not values:
+            continue
+        # Pad or truncate to match header count
+        while len(values) < len(headers):
+            values.append("")
+        values = values[:len(headers)]
+
+        row = {}
+        for header, value in zip(headers, values):
+            # Convert numeric strings
+            if value == "" or value is None:
+                row[header] = None
+            else:
+                try:
+                    # Try int first, then float
+                    if "." in value or "e" in value.lower():
+                        row[header] = float(value)
+                    else:
+                        row[header] = int(value)
+                except (ValueError, TypeError):
+                    row[header] = value
+        rows.append(row)
+
+    return rows
+
+
 class EvofinFetcher:
     """Fetches BIST financial data from evofin MCP."""
 
     def __init__(self, mcp_client=None):
         self.mcp = mcp_client
 
-    async def query(self, sql: str) -> list[dict]:
+    async def query(self, sql: str, purpose: str = "") -> list[dict]:
         """Execute a read-only SQL query via evofin MCP veri_sorgula."""
         if self.mcp:
-            result = await self.mcp.call_tool("veri_sorgula", {"sorgu": sql})
-            return result
+            try:
+                result = await self.mcp(sql=sql, purpose=purpose)
+                return _parse_markdown_table(result)
+            except Exception as e:
+                logger.error("MCP query failed: %s", e)
+                return []
         logger.warning("No MCP client — returning empty result for: %s", sql[:80])
         return []
 
-    async def search_documents(self, query: str, page: int = 1, per_page: int = 10) -> dict:
+    async def search_documents(self, query_text: str, page: int = 1, per_page: int = 10) -> dict:
         """Full-text search in evofin document pool."""
         if self.mcp:
-            result = await self.mcp.call_tool("dokumanlarda_ara", {
-                "arama": query,
-                "sayfa": page,
-                "sayfa_basi": per_page,
-            })
-            return result
+            try:
+                result = await self.mcp.search_documents(
+                    arama=query_text, sayfa=page, sayfa_basi=per_page,
+                )
+                return result if isinstance(result, dict) else {"sonuclar": [], "toplam": 0}
+            except Exception as e:
+                logger.error("MCP document search failed: %s", e)
         return {"sonuclar": [], "toplam": 0}
 
     async def load_document_chunks(self, chunk_ids: list[str]) -> list[dict]:
         """Load document chunk contents by IDs."""
         if self.mcp:
-            result = await self.mcp.call_tool("dokuman_chunk_yukle", {"ids": chunk_ids})
-            return result
+            try:
+                result = await self.mcp.load_chunks(ids=chunk_ids)
+                return result if isinstance(result, list) else []
+            except Exception as e:
+                logger.error("MCP chunk load failed: %s", e)
         return []
 
     async def search_symbol(self, keyword: str) -> list[dict]:
         """Search for symbol (stock, fund, etc.) by keyword."""
         if self.mcp:
-            result = await self.mcp.call_tool("sembol_arama", {"arama": keyword})
-            return result
+            try:
+                result = await self.mcp.search_symbol(kod_ve_unvan=keyword)
+                return _parse_markdown_table(result) if result else []
+            except Exception as e:
+                logger.error("MCP symbol search failed: %s", e)
         return []
 
     def _normalize_financials(self, rows: list[dict]) -> pd.DataFrame:
@@ -74,7 +156,12 @@ class EvofinFetcher:
 
         records = []
         for r in rows:
-            tarih = f"{r.get('yil', '')}-{int(r.get('ay', 0)):02d}"
+            yil = r.get("yil", "")
+            ay = r.get("ay", 0)
+            try:
+                tarih = f"{yil}-{int(ay):02d}"
+            except (ValueError, TypeError):
+                tarih = f"{yil}-00"
             records.append({
                 "tarih": tarih,
                 "kalem": r.get("kalem", ""),
@@ -91,7 +178,12 @@ class EvofinFetcher:
 
         records = []
         for r in rows:
-            tarih = f"{r.get('yil', '')}-{int(r.get('ay', 0)):02d}"
+            yil = r.get("yil", "")
+            ay = r.get("ay", 0)
+            try:
+                tarih = f"{yil}-{int(ay):02d}"
+            except (ValueError, TypeError):
+                tarih = f"{yil}-00"
             records.append({
                 "tarih": tarih,
                 "kalem": r.get("oran", ""),
@@ -108,7 +200,7 @@ class EvofinFetcher:
         WHERE hisse_senedi_kodu = '{ticker}'
         LIMIT 1
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} company profile")
         return rows[0] if rows else {}
 
     async def get_income_statement(self, ticker: str, periods: int = 10) -> pd.DataFrame:
@@ -129,7 +221,7 @@ class EvofinFetcher:
           )
         ORDER BY yil DESC, ay DESC, satir_no ASC
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} income statement ({periods} periods)")
         return self._normalize_financials(rows)
 
     async def get_balance_sheet(self, ticker: str, periods: int = 8) -> pd.DataFrame:
@@ -150,7 +242,7 @@ class EvofinFetcher:
           )
         ORDER BY yil DESC, ay DESC, satir_no ASC
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} balance sheet ({periods} periods)")
         return self._normalize_financials(rows)
 
     async def get_cash_flow(self, ticker: str, periods: int = 8) -> pd.DataFrame:
@@ -171,7 +263,7 @@ class EvofinFetcher:
           )
         ORDER BY yil DESC, ay DESC, satir_no ASC
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} cash flow ({periods} periods)")
         return self._normalize_financials(rows)
 
     async def get_ratios(self, ticker: str, periods: int = 8) -> pd.DataFrame:
@@ -192,7 +284,7 @@ class EvofinFetcher:
           )
         ORDER BY yil DESC, ay DESC, satir_no ASC
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} financial ratios ({periods} periods)")
         return self._normalize_ratios(rows)
 
     async def get_analyst_targets(self, ticker: str) -> list[dict]:
@@ -212,13 +304,11 @@ class EvofinFetcher:
         ORDER BY hf.yayin_tarihi_europe_istanbul DESC
         LIMIT 20
         """
-        rows = await self.query(sql)
+        rows = await self.query(sql, purpose=f"{ticker} analyst target prices")
         return rows if rows else []
 
     async def get_dividends(self, ticker: str) -> pd.DataFrame:
         """Fetch dividend data — try the temettüler table, fall back gracefully."""
-        # Note: evofin may or may not have a dedicated dividends table.
-        # Try querying; if it fails, return empty.
         try:
             sql = f"""
             SELECT tarih, hisse_senedi_kodu, temettü_verimi, hisse_basina_temettü,
@@ -228,7 +318,7 @@ class EvofinFetcher:
             ORDER BY tarih DESC
             LIMIT 20
             """
-            rows = await self.query(sql)
+            rows = await self.query(sql, purpose=f"{ticker} dividends")
             return pd.DataFrame(rows) if rows else pd.DataFrame()
         except Exception:
             logger.debug("Dividends table not available for %s", ticker)
@@ -243,17 +333,19 @@ class EvofinFetcher:
           AND h2.hisse_senedi_kodu != '{ticker}'
         LIMIT 15
         """
-        rows = await self.query(sql)
-        return [r["hisse_senedi_kodu"] for r in rows] if rows else []
+        rows = await self.query(sql, purpose=f"{ticker} sector peers")
+        return [r["hisse_senedi_kodu"] for r in rows if "hisse_senedi_kodu" in r] if rows else []
 
     async def get_activity_report(self, ticker: str) -> str:
         """Search for the company's latest activity report (faaliyet raporu)."""
         results = await self.search_documents(f"{ticker} faaliyet raporu", page=1, per_page=5)
         if not results.get("sonuclar"):
             return ""
-        chunk_ids = [r["id"] for r in results["sonuclar"][:3]]
+        chunk_ids = [r["id"] for r in results["sonuclar"][:3] if "id" in r]
+        if not chunk_ids:
+            return ""
         chunks = await self.load_document_chunks(chunk_ids)
-        return "\n\n".join(c.get("icerik", "") for c in chunks)
+        return "\n\n".join(c.get("icerik", "") for c in chunks if isinstance(c, dict))
 
     async def fetch_all(self, ticker: str) -> dict[str, Any]:
         """Fetch all data for a given ticker."""
