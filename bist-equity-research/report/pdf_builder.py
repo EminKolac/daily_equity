@@ -332,6 +332,43 @@ def build_pdf(state: dict) -> bytes:
         chart_width=300,
         chart_height=300,
     )
+
+    # Composite Scores Table
+    comp_scores = thesis.get("composite_score", {})
+    if comp_scores:
+        elements.append(Spacer(1, 6))
+        scores_data = [["Factor", "Score", "Weight"]]
+        factor_weights = {"fundamental": "30%", "technical": "25%", "macro": "20%", "sentiment": "25%"}
+        for factor in ["fundamental", "technical", "macro", "sentiment"]:
+            val = comp_scores.get(factor, 50)
+            scores_data.append([factor.capitalize(), f"{val:.0f}/100", factor_weights.get(factor, "")])
+        scores_data.append(["Overall", f"{comp_scores.get('overall', 50):.0f}/100", "100%"])
+
+        scores_table = Table(scores_data, colWidths=[150, 100, 80])
+        scores_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), TABLE_HEADER),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ECF0F1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, TABLE_ALT]),
+            ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E8F6F3")),
+            ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(scores_table)
+
+    # Conviction level
+    conviction = thesis.get("conviction", "Medium")
+    elements.append(Spacer(1, 8))
+    elements.append(Paragraph(
+        f"<b>Conviction Level:</b> {conviction} | "
+        f"<b>Risk/Reward:</b> {thesis.get('risk_reward_ratio', 'N/A')}x",
+        styles["BodyText2"]
+    ))
     elements.append(PageBreak())
 
     # Page 3-4: Company Overview
@@ -349,8 +386,70 @@ def build_pdf(state: dict) -> bytes:
         styles,
         chart_bytes=charts.get("revenue_margins"),
     )
+
+    # Financial Health Scoring Table
+    health = fundamental.get("financial_health", {})
+    piotroski = health.get("piotroski_f", {})
+    altman = health.get("altman_z", {})
+    eq = health.get("earnings_quality", {})
+    dupont = fundamental.get("dupont", {})
+
+    if piotroski or altman or dupont:
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("Financial Health Scorecard", styles["SubSectionHeader"]))
+        health_data = [
+            ["Metric", "Value", "Assessment"],
+        ]
+        if piotroski:
+            health_data.append([
+                "Piotroski F-Score", f"{piotroski.get('score', 'N/A')}/9",
+                piotroski.get("interpretation", "N/A"),
+            ])
+        if altman:
+            health_data.append([
+                "Altman Z-Score", f"{altman.get('z_score', 'N/A')}",
+                altman.get("zone", "N/A"),
+            ])
+        if eq:
+            health_data.append([
+                "Earnings Quality", f"CF/NI: {eq.get('cf_vs_net_income', 'N/A')}",
+                eq.get("quality", "N/A"),
+            ])
+        if dupont:
+            health_data.append([
+                "DuPont ROE",
+                f"{dupont.get('roe', 0):.1f}%",
+                dupont.get("decomposition", "N/A"),
+            ])
+
+        health_table = Table(health_data, colWidths=[120, 100, 230])
+        health_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), TABLE_HEADER),
+            ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("FONTSIZE", (0, 0), (-1, -1), 8),
+            ("FONTNAME", (0, 1), (-1, -1), "Helvetica"),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ECF0F1")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [WHITE, TABLE_ALT]),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]))
+        elements.append(health_table)
+
+    if "balance_sheet" in charts:
+        elements.append(Spacer(1, 8))
+        elements.append(_img_from_bytes(charts["balance_sheet"], width=460, max_height=230))
+
     if "cash_flow_waterfall" in charts:
+        elements.append(Spacer(1, 8))
         elements.append(_img_from_bytes(charts["cash_flow_waterfall"], width=460, max_height=230))
+
+    if "eps_pe" in charts:
+        elements.append(Spacer(1, 8))
+        elements.append(_img_from_bytes(charts["eps_pe"], width=460, max_height=230))
+
     elements.append(PageBreak())
 
     # Page 8-9: Valuation
@@ -371,6 +470,8 @@ def build_pdf(state: dict) -> bytes:
             ["Growth Rate (5Y)", f"{assumptions.get('growth_rate_5y', 0)*100:.1f}%"],
             ["Terminal Growth", f"{assumptions.get('terminal_growth', 0)*100:.1f}%"],
             ["DCF Fair Value", f"{dcf.get('fair_value', 0):,.2f} TRY"],
+            ["PV of FCFs", f"{dcf.get('pv_fcfs', 0):,.2f} TRY"],
+            ["PV of Terminal Value", f"{dcf.get('pv_terminal', 0):,.2f} TRY"],
         ]
         dcf_table = Table(dcf_data, colWidths=[220, 220])
         dcf_table.setStyle(TableStyle([
@@ -386,6 +487,43 @@ def build_pdf(state: dict) -> bytes:
         ]))
         elements.append(Spacer(1, 8))
         elements.append(dcf_table)
+
+    # DCF Sensitivity Table (WACC vs Terminal Growth)
+    sensitivity = fundamental.get("valuation", {}).get("sensitivity", {})
+    if sensitivity:
+        elements.append(Spacer(1, 8))
+        elements.append(Paragraph("DCF Sensitivity (WACC vs Terminal Growth)", styles["SubSectionHeader"]))
+        try:
+            import pandas as pd
+            if isinstance(sensitivity, dict):
+                sens_df = pd.DataFrame(sensitivity)
+                if not sens_df.empty:
+                    headers = [""] + list(sens_df.columns)
+                    sens_table_data = [headers]
+                    for idx, row in sens_df.iterrows():
+                        sens_table_data.append([str(idx)] + [f"{v:,.2f}" for v in row.values])
+
+                    n_cols = len(headers)
+                    col_width = min(80, int(450 / n_cols))
+                    sens_table = Table(sens_table_data, colWidths=[col_width] * n_cols)
+                    sens_table.setStyle(TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), SECONDARY),
+                        ("BACKGROUND", (0, 0), (0, -1), SECONDARY),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), WHITE),
+                        ("TEXTCOLOR", (0, 0), (0, -1), WHITE),
+                        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                        ("FONTNAME", (0, 0), (0, -1), "Helvetica-Bold"),
+                        ("FONTSIZE", (0, 0), (-1, -1), 7),
+                        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ECF0F1")),
+                        ("ROWBACKGROUNDS", (1, 1), (-1, -1), [WHITE, TABLE_ALT]),
+                        ("TOPPADDING", (0, 0), (-1, -1), 3),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                    ]))
+                    elements.append(sens_table)
+        except Exception as e:
+            logger.error("Sensitivity table build failed: %s", e)
+
     elements.append(PageBreak())
 
     # Page 10-11: Technical Analysis

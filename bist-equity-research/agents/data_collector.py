@@ -76,43 +76,28 @@ def create_data_collector(mcp_client=None):
             logger.error("Quartr fetch failed: %s", e)
             errors.append(f"quartr: {e}")
 
-        # Sync fetchers (run in thread pool)
+        # Sync fetchers (run in parallel via thread pool)
         loop = asyncio.get_event_loop()
 
-        try:
-            yahoo_data = await loop.run_in_executor(None, yahoo.fetch_all, ticker)
-            collected.update(yahoo_data)
-        except Exception as e:
-            logger.error("Yahoo fetch failed: %s", e)
-            errors.append(f"yahoo: {e}")
+        async def _fetch_sync(name, func, *args):
+            try:
+                return name, await loop.run_in_executor(None, func, *args)
+            except Exception as e:
+                logger.error("%s fetch failed: %s", name, e)
+                errors.append(f"{name}: {e}")
+                return name, {}
 
-        try:
-            isy_data = await loop.run_in_executor(None, isyatirim.fetch_all, ticker)
-            collected.update(isy_data)
-        except Exception as e:
-            logger.error("İş Yatırım fetch failed: %s", e)
-            errors.append(f"isyatirim: {e}")
+        sync_results = await asyncio.gather(
+            _fetch_sync("yahoo", yahoo.fetch_all, ticker),
+            _fetch_sync("isyatirim", isyatirim.fetch_all, ticker),
+            _fetch_sync("tcmb", tcmb.fetch_all),
+            _fetch_sync("twitter", twitter.fetch_all, ticker),
+            _fetch_sync("kap", kap.fetch_all, ticker),
+        )
 
-        try:
-            tcmb_data = await loop.run_in_executor(None, tcmb.fetch_all)
-            collected.update(tcmb_data)
-        except Exception as e:
-            logger.error("TCMB fetch failed: %s", e)
-            errors.append(f"tcmb: {e}")
-
-        try:
-            twitter_data = await loop.run_in_executor(None, twitter.fetch_all, ticker)
-            collected.update(twitter_data)
-        except Exception as e:
-            logger.error("Twitter/Apify fetch failed: %s", e)
-            errors.append(f"twitter: {e}")
-
-        try:
-            kap_data = await loop.run_in_executor(None, kap.fetch_all, ticker)
-            collected.update(kap_data)
-        except Exception as e:
-            logger.error("KAP fetch failed: %s", e)
-            errors.append(f"kap: {e}")
+        for name, data in sync_results:
+            if data:
+                collected.update(data)
 
         # Build output state
         update = {

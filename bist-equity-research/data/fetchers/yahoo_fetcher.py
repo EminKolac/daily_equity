@@ -1,6 +1,7 @@
 """Yahoo Finance data fetcher — price data + benchmark."""
 
 import logging
+import time
 from typing import Any
 
 import pandas as pd
@@ -16,14 +17,29 @@ class YahooFetcher:
 
     BIST_SUFFIX = ".IS"
     BENCHMARK = "XU100.IS"
+    MAX_RETRIES = 2
+    RETRY_DELAY = 2
+
+    def _with_retry(self, func, *args, **kwargs):
+        """Execute function with retry logic."""
+        for attempt in range(self.MAX_RETRIES + 1):
+            try:
+                return func(*args, **kwargs)
+            except Exception as e:
+                if attempt < self.MAX_RETRIES:
+                    logger.warning("Yahoo retry %d/%d: %s", attempt + 1, self.MAX_RETRIES, e)
+                    time.sleep(self.RETRY_DELAY * (attempt + 1))
+                else:
+                    raise
 
     def get_price_history(self, ticker: str, period: str = "2y") -> pd.DataFrame:
         symbol = f"{ticker}{self.BIST_SUFFIX}"
         try:
             stock = yf.Ticker(symbol)
-            df = stock.history(period=period)
-            if df.empty:
+            df = self._with_retry(stock.history, period=period)
+            if df is None or df.empty:
                 logger.warning("No price data from Yahoo for %s", symbol)
+                return pd.DataFrame()
             return df
         except Exception as e:
             logger.error("Yahoo price fetch failed for %s: %s", symbol, e)
@@ -33,7 +49,8 @@ class YahooFetcher:
         symbol = f"{ticker}{self.BIST_SUFFIX}"
         try:
             stock = yf.Ticker(symbol)
-            return dict(stock.info)
+            info = self._with_retry(lambda: stock.info)
+            return dict(info) if info else {}
         except Exception as e:
             logger.error("Yahoo info fetch failed for %s: %s", symbol, e)
             return {}
@@ -41,7 +58,10 @@ class YahooFetcher:
     def get_benchmark(self, period: str = "2y") -> pd.DataFrame:
         try:
             bench = yf.Ticker(self.BENCHMARK)
-            return bench.history(period=period)
+            df = self._with_retry(bench.history, period=period)
+            if df is None or df.empty:
+                return pd.DataFrame()
+            return df
         except Exception as e:
             logger.error("Yahoo benchmark fetch failed: %s", e)
             return pd.DataFrame()
@@ -50,7 +70,10 @@ class YahooFetcher:
         symbol = f"{ticker}{self.BIST_SUFFIX}"
         try:
             stock = yf.Ticker(symbol)
-            return stock.dividends.reset_index()
+            divs = stock.dividends
+            if divs is None or divs.empty:
+                return pd.DataFrame()
+            return divs.reset_index()
         except Exception as e:
             logger.error("Yahoo dividends fetch failed for %s: %s", symbol, e)
             return pd.DataFrame()
