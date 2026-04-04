@@ -87,12 +87,21 @@ async def generate_all_reports(tickers: list[str] | None = None) -> list[str]:
         tickers = TICKER_LIST
 
     reports = []
+    failed = []
     for ticker in tickers:
         try:
             path = await generate_report(ticker)
             reports.append(path)
+            logger.info("SUCCESS: %s", ticker)
         except Exception as e:
-            logger.error("Failed to generate report for %s: %s", ticker, e)
+            logger.error("FAILED: %s — %s", ticker, e)
+            failed.append(ticker)
+
+    logger.info("=" * 60)
+    logger.info("BATCH COMPLETE: %d/%d reports generated", len(reports), len(tickers))
+    if failed:
+        logger.warning("Failed tickers: %s", ", ".join(failed))
+    logger.info("=" * 60)
     return reports
 
 

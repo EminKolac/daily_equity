@@ -33,7 +33,7 @@ jobs:
       - name: Create .env file
         working-directory: bist-equity-research
         run: |
-          cat > .env <<'EOF'
+          cat > .env <<EOF
           ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
           TCMB_EVDS_API_KEY=${{ secrets.TCMB_EVDS_API_KEY }}
           APIFY_API_TOKEN=${{ secrets.APIFY_API_TOKEN }}
@@ -43,11 +43,15 @@ jobs:
           SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
           REPORT_RECIPIENT=mehmetemin.kolac@tvf.com.tr
           EOF
-          # Strip leading whitespace from each line (YAML indentation artifact)
           sed -i 's/^[[:space:]]*//' .env
+
+      - name: Create reports directory
+        working-directory: bist-equity-research
+        run: mkdir -p reports
 
       - name: Generate reports for all 11 tickers
         working-directory: bist-equity-research
+        continue-on-error: true
         run: |
           python main.py --all --send-email
         env:

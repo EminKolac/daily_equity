@@ -27,18 +27,18 @@ logger = logging.getLogger(__name__)
 
 def _img_from_bytes(png_bytes: bytes, width: float = 480, max_height: float = 300) -> Image:
     """Convert PNG bytes to a ReportLab Image flowable."""
-    buf = io.BytesIO(png_bytes)
-    img = Image(buf, width=width, height=max_height)
-    img.hAlign = "CENTER"
-    # Maintain aspect ratio
     from reportlab.lib.utils import ImageReader
-    reader = ImageReader(buf)
-    iw, ih = reader.getSize()
-    aspect = ih / iw if iw else 1
-    actual_height = width * aspect
-    if actual_height > max_height:
+    buf = io.BytesIO(png_bytes)
+    try:
+        reader = ImageReader(buf)
+        iw, ih = reader.getSize()
+        aspect = ih / iw if iw else 1
+        actual_height = width * aspect
+        if actual_height > max_height:
+            actual_height = max_height
+            width = max_height / aspect
+    except Exception:
         actual_height = max_height
-        width = max_height / aspect
     buf.seek(0)
     img = Image(buf, width=width, height=actual_height)
     img.hAlign = "CENTER"

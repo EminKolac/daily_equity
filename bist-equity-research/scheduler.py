@@ -82,19 +82,23 @@ BIST Equity Research System
             part.add_header("Content-Disposition", f"attachment; filename={filename}")
             msg.attach(part)
 
-    # Send
-    try:
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            server.login(SMTP_USER, SMTP_PASSWORD)
-            server.send_message(msg)
-        logger.info("Email sent to %s with %d attachments", recipient, len(report_paths))
-        return True
-    except Exception as e:
-        logger.error("Email send failed: %s", e)
-        return False
+    # Send with retry
+    import time
+    for attempt in range(3):
+        try:
+            with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+                server.ehlo()
+                server.starttls()
+                server.ehlo()
+                server.login(SMTP_USER, SMTP_PASSWORD)
+                server.send_message(msg)
+            logger.info("Email sent to %s with %d attachments", recipient, len(report_paths))
+            return True
+        except Exception as e:
+            logger.error("Email send attempt %d/3 failed: %s", attempt + 1, e)
+            if attempt < 2:
+                time.sleep(5 * (attempt + 1))
+    return False
 
 
 async def weekly_job():

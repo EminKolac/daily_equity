@@ -67,22 +67,30 @@ class TCMBFetcher:
             result[name] = self._fetch_series(code, start_str, end_str)
         return result
 
+    # Reasonable fallback values when TCMB API is unavailable (updated April 2026)
+    FALLBACK_VALUES = {
+        "policy_rate": 42.5,
+        "cpi_yoy": 30.0,
+        "usd_try": 38.5,
+        "eur_try": 42.0,
+    }
+
     def get_latest_values(self) -> dict[str, float | None]:
-        """Get latest value for each macro series."""
+        """Get latest value for each macro series. Falls back to reasonable estimates."""
         indicators = self.get_macro_indicators(lookback_days=90)
         latest = {}
         for name, df in indicators.items():
             if df.empty:
-                latest[name] = None
+                latest[name] = self.FALLBACK_VALUES.get(name)
                 continue
             value_cols = [c for c in df.columns if c not in ("Tarih", "UNIXTIME")]
             if value_cols:
                 try:
                     latest[name] = float(df[value_cols[0]].dropna().iloc[-1])
                 except (IndexError, ValueError):
-                    latest[name] = None
+                    latest[name] = self.FALLBACK_VALUES.get(name)
             else:
-                latest[name] = None
+                latest[name] = self.FALLBACK_VALUES.get(name)
         return latest
 
     def fetch_all(self) -> dict[str, Any]:

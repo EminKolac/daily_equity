@@ -99,13 +99,44 @@ def create_data_collector(mcp_client=None):
             if data:
                 collected.update(data)
 
+        # Use İş Yatırım financials as fallback when evofin (MCP) data is empty
+        income_stmt = collected.get("income_statement")
+        balance_sheet = collected.get("balance_sheet")
+        cash_flow_stmt = collected.get("cash_flow")
+
+        _evofin_empty = (
+            (income_stmt is None or (hasattr(income_stmt, "empty") and income_stmt.empty))
+            and (balance_sheet is None or (hasattr(balance_sheet, "empty") and balance_sheet.empty))
+        )
+
+        if _evofin_empty:
+            logger.info("Evofin data empty — using İş Yatırım as primary financial source")
+            isyatirim_obj = isyatirim
+            try:
+                isy_income = collected.get("isyatirim_income")
+                if isy_income is not None and not isy_income.empty:
+                    income_stmt = isyatirim_obj.normalize_to_evofin_format(isy_income, "income")
+                    logger.info("İş Yatırım income: %d rows", len(income_stmt))
+
+                isy_balance = collected.get("isyatirim_financials")
+                if isy_balance is not None and not isy_balance.empty:
+                    balance_sheet = isyatirim_obj.normalize_to_evofin_format(isy_balance, "balance")
+                    logger.info("İş Yatırım balance: %d rows", len(balance_sheet))
+
+                isy_cf = collected.get("isyatirim_cashflow")
+                if isy_cf is not None and not isy_cf.empty:
+                    cash_flow_stmt = isyatirim_obj.normalize_to_evofin_format(isy_cf, "cashflow")
+                    logger.info("İş Yatırım cashflow: %d rows", len(cash_flow_stmt))
+            except Exception as e:
+                logger.error("İş Yatırım normalization failed: %s", e)
+
         # Build output state
         update = {
             "company_profile": collected.get("company_profile", {}),
             "financial_data": {
-                "income_statement": collected.get("income_statement"),
-                "balance_sheet": collected.get("balance_sheet"),
-                "cash_flow": collected.get("cash_flow"),
+                "income_statement": income_stmt,
+                "balance_sheet": balance_sheet,
+                "cash_flow": cash_flow_stmt,
                 "ratios": collected.get("ratios"),
                 "dividends": collected.get("dividends"),
                 "activity_report": collected.get("activity_report", ""),
