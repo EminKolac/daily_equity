@@ -1,4 +1,8 @@
-"""Quartr MCP fetcher — earnings transcripts + consensus (supplementary)."""
+"""Quartr MCP fetcher — earnings transcripts + consensus (supplementary).
+
+Uses the Quartr MCP endpoint (mcp.quartr.com) for earnings call transcripts
+and analyst consensus data. Falls back gracefully when MCP is unavailable.
+"""
 
 import logging
 from typing import Any
@@ -15,23 +19,36 @@ class QuartrFetcher:
         self.mcp = mcp_client
 
     async def get_latest_transcript(self, ticker: str) -> str:
-        """Get the latest earnings call transcript."""
+        """Get the latest earnings call transcript via MCP SQL query."""
         if self.mcp:
             try:
-                result = await self.mcp.call_tool("quartr_transcript", {"ticker": ticker})
-                return result.get("transcript", "")
+                # Use the MCPClient's __call__ method (veri_sorgula pattern)
+                result = await self.mcp(
+                    sql=f"SELECT transcript FROM earnings_calls WHERE ticker = '{ticker}' ORDER BY date DESC LIMIT 1",
+                    purpose=f"{ticker} latest earnings transcript",
+                )
+                if isinstance(result, dict) and result.get("table"):
+                    return result["table"]
+                if isinstance(result, str):
+                    return result
+                return ""
             except Exception as e:
-                logger.error("Quartr transcript failed for %s: %s", ticker, e)
+                logger.warning("Quartr transcript unavailable for %s: %s", ticker, e)
         return ""
 
     async def get_consensus_estimates(self, ticker: str) -> dict:
-        """Get analyst consensus estimates from Quartr."""
+        """Get analyst consensus estimates from Quartr via MCP."""
         if self.mcp:
             try:
-                result = await self.mcp.call_tool("quartr_consensus", {"ticker": ticker})
-                return result
+                result = await self.mcp(
+                    sql=f"SELECT * FROM consensus_estimates WHERE ticker = '{ticker}' ORDER BY date DESC LIMIT 10",
+                    purpose=f"{ticker} consensus estimates",
+                )
+                if isinstance(result, dict):
+                    return result
+                return {}
             except Exception as e:
-                logger.error("Quartr consensus failed for %s: %s", ticker, e)
+                logger.warning("Quartr consensus unavailable for %s: %s", ticker, e)
         return {}
 
     async def fetch_all(self, ticker: str) -> dict[str, Any]:
