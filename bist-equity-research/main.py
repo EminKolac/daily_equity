@@ -56,6 +56,8 @@ async def generate_report(ticker: str, output_path: str | None = None) -> str:
 
     Returns the output file path.
     """
+    import time as _time
+    t0 = _time.time()
     logger.info("=" * 60)
     logger.info("Generating report for %s", ticker)
     logger.info("=" * 60)
@@ -66,7 +68,11 @@ async def generate_report(ticker: str, output_path: str | None = None) -> str:
     state = await run_research_pipeline(ticker=ticker, llm=llm)
 
     # Build PDF
-    pdf_bytes = build_pdf(state)
+    try:
+        pdf_bytes = build_pdf(state)
+    except Exception as e:
+        logger.error("PDF build failed for %s: %s", ticker, e)
+        raise
 
     # Save
     os.makedirs(REPORT_OUTPUT_DIR, exist_ok=True)
@@ -77,7 +83,8 @@ async def generate_report(ticker: str, output_path: str | None = None) -> str:
     with open(output_path, "wb") as f:
         f.write(pdf_bytes)
 
-    logger.info("Report saved: %s (%d bytes)", output_path, len(pdf_bytes))
+    elapsed = _time.time() - t0
+    logger.info("Report saved: %s (%d bytes, %.1fs)", output_path, len(pdf_bytes), elapsed)
     return output_path
 
 
@@ -135,8 +142,20 @@ def main():
         action="store_true",
         help="Send reports via email after generation",
     )
+    parser.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help="Clear data cache before running",
+    )
 
     args = parser.parse_args()
+
+    if args.clear_cache:
+        import shutil
+        from config.settings import CACHE_DIR
+        if os.path.exists(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            logger.info("Cache cleared: %s", CACHE_DIR)
 
     if args.all:
         reports = asyncio.run(generate_all_reports())

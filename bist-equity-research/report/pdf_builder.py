@@ -2,6 +2,7 @@
 
 import io
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -24,9 +25,75 @@ from config.tickers import TICKERS
 
 logger = logging.getLogger(__name__)
 
+# Maximum characters per paragraph to avoid ReportLab layout overflow
+_MAX_PARAGRAPH_LEN = 5000
 
-def _img_from_bytes(png_bytes: bytes, width: float = 480, max_height: float = 300) -> Image:
-    """Convert PNG bytes to a ReportLab Image flowable."""
+# Allowed HTML tags that ReportLab Paragraph supports
+_ALLOWED_TAGS_RE = re.compile(
+    r"<(/?)("
+    r"b|i|u|br|font|sub|sup|strike|strong|em|a|para|span"
+    r")(\s[^>]*)?>",
+    re.IGNORECASE,
+)
+
+# Major sections that warrant a page break before them
+_MAJOR_SECTIONS = frozenset({
+    "Financial Analysis",
+    "Technical Analysis",
+    "Investment Thesis",
+    "Valuation",
+})
+
+
+def _safe_text(text: Any, max_length: int = _MAX_PARAGRAPH_LEN) -> str:
+    """Sanitise arbitrary text for use inside a ReportLab ``Paragraph``.
+
+    - Handles ``None`` and non-string values.
+    - Escapes ``&``, ``<``, ``>`` that would break XML parsing while
+      preserving already-escaped entities and valid HTML tags (``<b>``,
+      ``<i>``, etc.).
+    - Truncates to *max_length* characters (adding an ellipsis marker).
+    """
+    if text is None:
+        return ""
+    text = str(text)
+    if not text:
+        return ""
+
+    # --- Step 1: protect existing valid HTML tags by replacing with placeholders ---
+    placeholders: list[tuple[str, str]] = []
+
+    def _stash_tag(m: re.Match) -> str:
+        token = f"\x00TAG{len(placeholders)}\x00"
+        placeholders.append((token, m.group(0)))
+        return token
+
+    text = _ALLOWED_TAGS_RE.sub(_stash_tag, text)
+
+    # --- Step 2: escape XML-special characters ---
+    # Escape & but not already-escaped entities like &amp; &lt; &#123; etc.
+    text = re.sub(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)", "&amp;", text)
+    text = text.replace("<", "&lt;").replace(">", "&gt;")
+
+    # --- Step 3: restore valid HTML tags ---
+    for token, original in placeholders:
+        text = text.replace(token, original)
+
+    # --- Step 4: truncate ---
+    if len(text) > max_length:
+        text = text[:max_length] + "..."
+
+    return text
+
+
+def _img_from_bytes(png_bytes: bytes, width: float = 480, max_height: float = 300) -> Image | None:
+    """Convert PNG bytes to a ReportLab Image flowable.
+
+    Returns ``None`` if the bytes are empty or cannot be decoded so that
+    callers can safely skip the image.
+    """
+    if not png_bytes:
+        return None
     from reportlab.lib.utils import ImageReader
     buf = io.BytesIO(png_bytes)
     try:
@@ -37,12 +104,13 @@ def _img_from_bytes(png_bytes: bytes, width: float = 480, max_height: float = 30
         if actual_height > max_height:
             actual_height = max_height
             width = max_height / aspect
+        buf.seek(0)
+        img = Image(buf, width=width, height=actual_height)
+        img.hAlign = "CENTER"
+        return img
     except Exception:
-        actual_height = max_height
-    buf.seek(0)
-    img = Image(buf, width=width, height=actual_height)
-    img.hAlign = "CENTER"
-    return img
+        logger.warning("Failed to decode image bytes (%d bytes)", len(png_bytes))
+        return None
 
 
 def _recommendation_color(rec: str) -> colors.Color:
@@ -155,18 +223,63 @@ def _build_cover_page(
     elements.append(metrics_table)
     elements.append(Spacer(1, 15))
 
+    # Score summary bar
+    comp_scores = state.get("investment_thesis", {}).get("composite_score", {})
+    if comp_scores:
+        score_labels = ["Fundamental", "Technical", "Macro", "Sentiment"]
+        score_keys = ["fundamental", "technical", "macro", "sentiment"]
+        score_header = [Paragraph(f"<b>{lbl}</b>", ParagraphStyle(
+            f"ScoreH_{lbl}", fontName="Helvetica-Bold", fontSize=7,
+            textColor=WHITE, alignment=TA_CENTER,
+        )) for lbl in score_labels]
+        score_values = []
+        for key in score_keys:
+            val = comp_scores.get(key, 0)
+            # Color-code: green >=60, amber 40-60, red <40
+            if val >= 60:
+                sc = POSITIVE
+            elif val >= 40:
+                sc = ACCENT
+            else:
+                sc = NEGATIVE
+            score_values.append(Paragraph(
+                f"<b>{val:.0f}/100</b>",
+                ParagraphStyle(f"ScoreV_{key}", fontName="Helvetica-Bold",
+                               fontSize=11, textColor=sc, alignment=TA_CENTER),
+            ))
+        score_bar = Table(
+            [score_header, score_values],
+            colWidths=[available_width / 4] * 4,
+        )
+        score_bar.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), SECONDARY),
+            ("BACKGROUND", (0, 1), (-1, 1), LIGHT_BG),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#ECF0F1")),
+        ]))
+        elements.append(score_bar)
+        elements.append(Spacer(1, 10))
+
     # 1-line thesis
     final_thesis = thesis.get("final_thesis", "")
     if final_thesis:
         elements.append(Paragraph(
-            f"<b>Investment Thesis:</b> {final_thesis[:300]}",
+            f"<b>Investment Thesis:</b> {_safe_text(final_thesis, 300)}",
             styles["BodyText2"]
         ))
     elements.append(Spacer(1, 10))
 
     # Price vs benchmark chart
     if "price_vs_benchmark" in charts:
-        elements.append(_img_from_bytes(charts["price_vs_benchmark"], width=460, max_height=220))
+        try:
+            img = _img_from_bytes(charts["price_vs_benchmark"], width=460, max_height=220)
+            if img:
+                elements.append(img)
+        except Exception:
+            logger.warning("Failed to embed price_vs_benchmark chart on cover page")
 
     elements.append(PageBreak())
 
@@ -180,24 +293,47 @@ def _build_section(
     chart_width: float = 460,
     chart_height: float = 250,
     extra_table: Table | None = None,
+    page_break_before: bool = False,
 ):
-    """Build a generic report section."""
-    elements.append(Paragraph(title, styles["SectionHeader"]))
+    """Build a generic report section.
+
+    If *page_break_before* is ``True`` a ``PageBreak`` is inserted before
+    the section header.  This replaces the old pattern of manually adding
+    ``PageBreak`` after every section.
+    """
+    if page_break_before:
+        elements.append(PageBreak())
+
+    elements.append(Paragraph(_safe_text(title), styles["SectionHeader"]))
     elements.append(HRFlowable(
         width="100%", thickness=1, color=SECONDARY, spaceAfter=6,
     ))
 
     if content:
-        # Split paragraphs
+        # Split paragraphs on double-newlines first, then single newlines
         paragraphs = content.split("\n\n") if "\n\n" in content else content.split("\n")
         for para in paragraphs:
             para = para.strip()
-            if para:
-                elements.append(Paragraph(para, styles["BodyText2"]))
+            if not para:
+                continue
+            safe = _safe_text(para)
+            try:
+                elements.append(Paragraph(safe, styles["BodyText2"]))
+            except Exception:
+                # If the paragraph still fails (e.g. deeply broken markup),
+                # fall back to a plain-text version with all tags stripped.
+                fallback = re.sub(r"<[^>]+>", "", safe)
+                logger.warning("Paragraph XML parse failed; using stripped fallback")
+                elements.append(Paragraph(fallback, styles["BodyText2"]))
 
     if chart_bytes:
-        elements.append(Spacer(1, 8))
-        elements.append(_img_from_bytes(chart_bytes, width=chart_width, max_height=chart_height))
+        try:
+            img = _img_from_bytes(chart_bytes, width=chart_width, max_height=chart_height)
+            if img:
+                elements.append(Spacer(1, 8))
+                elements.append(img)
+        except Exception:
+            logger.warning("Failed to embed chart in section '%s'", title)
 
     if extra_table:
         elements.append(Spacer(1, 8))
@@ -323,6 +459,20 @@ def build_pdf(state: dict) -> bytes:
     # Page 1: Cover
     _build_cover_page(elements, state, styles, charts)
 
+    # -- Helper to safely embed a chart from the charts dict -----------------
+    def _embed_chart(key: str, width: float = 460, max_height: float = 230):
+        """Append chart image if present and valid; silently skip otherwise."""
+        raw = charts.get(key)
+        if not raw:
+            return
+        try:
+            img = _img_from_bytes(raw, width=width, max_height=max_height)
+            if img:
+                elements.append(Spacer(1, 8))
+                elements.append(img)
+        except Exception:
+            logger.warning("Failed to embed chart '%s'", key)
+
     # Page 2: Executive Summary
     _build_section(
         elements, "Executive Summary",
@@ -365,26 +515,25 @@ def build_pdf(state: dict) -> bytes:
     conviction = thesis.get("conviction", "Medium")
     elements.append(Spacer(1, 8))
     elements.append(Paragraph(
-        f"<b>Conviction Level:</b> {conviction} | "
-        f"<b>Risk/Reward:</b> {thesis.get('risk_reward_ratio', 'N/A')}x",
+        f"<b>Conviction Level:</b> {_safe_text(conviction)} | "
+        f"<b>Risk/Reward:</b> {_safe_text(str(thesis.get('risk_reward_ratio', 'N/A')))}x",
         styles["BodyText2"]
     ))
-    elements.append(PageBreak())
 
-    # Page 3-4: Company Overview
+    # Company Overview — minor section, no page break
     _build_section(
         elements, "Company Overview",
         sections.get("COMPANY_OVERVIEW", ""),
         styles,
     )
-    elements.append(PageBreak())
 
-    # Page 5-7: Financial Analysis
+    # Financial Analysis — MAJOR section, page break before
     _build_section(
         elements, "Financial Analysis",
         sections.get("FINANCIAL_ANALYSIS", ""),
         styles,
         chart_bytes=charts.get("revenue_margins"),
+        page_break_before=True,
     )
 
     # Financial Health Scoring Table
@@ -403,23 +552,23 @@ def build_pdf(state: dict) -> bytes:
         if piotroski:
             health_data.append([
                 "Piotroski F-Score", f"{piotroski.get('score', 'N/A')}/9",
-                piotroski.get("interpretation", "N/A"),
+                _safe_text(piotroski.get("interpretation", "N/A")),
             ])
         if altman:
             health_data.append([
                 "Altman Z-Score", f"{altman.get('z_score', 'N/A')}",
-                altman.get("zone", "N/A"),
+                _safe_text(altman.get("zone", "N/A")),
             ])
         if eq:
             health_data.append([
                 "Earnings Quality", f"CF/NI: {eq.get('cf_vs_net_income', 'N/A')}",
-                eq.get("quality", "N/A"),
+                _safe_text(eq.get("quality", "N/A")),
             ])
         if dupont:
             health_data.append([
                 "DuPont ROE",
                 f"{dupont.get('roe', 0):.1f}%",
-                dupont.get("decomposition", "N/A"),
+                _safe_text(str(dupont.get("decomposition", "N/A"))),
             ])
 
         health_table = Table(health_data, colWidths=[120, 100, 230])
@@ -438,26 +587,17 @@ def build_pdf(state: dict) -> bytes:
         ]))
         elements.append(health_table)
 
-    if "balance_sheet" in charts:
-        elements.append(Spacer(1, 8))
-        elements.append(_img_from_bytes(charts["balance_sheet"], width=460, max_height=230))
+    _embed_chart("balance_sheet")
+    _embed_chart("cash_flow_waterfall")
+    _embed_chart("eps_pe")
 
-    if "cash_flow_waterfall" in charts:
-        elements.append(Spacer(1, 8))
-        elements.append(_img_from_bytes(charts["cash_flow_waterfall"], width=460, max_height=230))
-
-    if "eps_pe" in charts:
-        elements.append(Spacer(1, 8))
-        elements.append(_img_from_bytes(charts["eps_pe"], width=460, max_height=230))
-
-    elements.append(PageBreak())
-
-    # Page 8-9: Valuation
+    # Valuation — MAJOR section, page break before
     _build_section(
         elements, "Valuation",
         sections.get("VALUATION_DISCUSSION", ""),
         styles,
         chart_bytes=charts.get("football_field"),
+        page_break_before=True,
     )
 
     # DCF assumptions table
@@ -524,15 +664,14 @@ def build_pdf(state: dict) -> bytes:
         except Exception as e:
             logger.error("Sensitivity table build failed: %s", e)
 
-    elements.append(PageBreak())
-
-    # Page 10-11: Technical Analysis
+    # Technical Analysis — MAJOR section, page break before
     _build_section(
         elements, "Technical Analysis",
         sections.get("TECHNICAL_ANALYSIS_TEXT", technical.get("technical_summary", "")),
         styles,
         chart_bytes=charts.get("technical_indicators"),
         chart_height=320,
+        page_break_before=True,
     )
     elements.append(_build_indicators_table(technical, styles))
 
@@ -542,7 +681,7 @@ def build_pdf(state: dict) -> bytes:
         support = key_levels.get("support", [])
         resistance = key_levels.get("resistance", [])
         levels_data = [["Support Levels", "Resistance Levels"]]
-        max_len = max(len(support), len(resistance))
+        max_len = max(len(support), len(resistance), 1)
         for i in range(min(max_len, 4)):
             s = f"{support[i]:,.2f}" if i < len(support) else ""
             r = f"{resistance[i]:,.2f}" if i < len(resistance) else ""
@@ -561,29 +700,24 @@ def build_pdf(state: dict) -> bytes:
         elements.append(Spacer(1, 8))
         elements.append(levels_table)
 
-    if "candlestick" in charts:
-        elements.append(Spacer(1, 8))
-        elements.append(_img_from_bytes(charts["candlestick"], width=460, max_height=280))
-    elements.append(PageBreak())
+    _embed_chart("candlestick", max_height=280)
 
-    # Page 12: Peer Comparison
+    # Peer Comparison — minor section, no forced page break
     _build_section(
         elements, "Peer Comparison",
         "Relative valuation comparison with sector peers.",
         styles,
         chart_bytes=charts.get("relative_performance"),
     )
-    elements.append(PageBreak())
 
-    # Page 13: Macro & Sector
+    # Macro & Sector — minor section, no forced page break
     _build_section(
         elements, "Macro & Sector Analysis",
         sections.get("MACRO_SECTOR", macro.get("macro_thesis", "")),
         styles,
     )
-    elements.append(PageBreak())
 
-    # Page 14: Sentiment & Consensus
+    # Sentiment & Consensus — minor section
     _build_section(
         elements, "Market Sentiment",
         sentiment.get("sentiment_summary", ""),
@@ -596,24 +730,25 @@ def build_pdf(state: dict) -> bytes:
     if twitter.get("narrative_summary"):
         elements.append(Spacer(1, 8))
         elements.append(Paragraph(
-            f"<b>Social Media Commentary (X/Twitter):</b> {twitter['narrative_summary']}",
+            f"<b>Social Media Commentary (X/Twitter):</b> "
+            f"{_safe_text(twitter['narrative_summary'])}",
             styles["BodyText2"]
         ))
-    elements.append(PageBreak())
 
-    # Page 15: Investment Thesis
+    # Investment Thesis — MAJOR section, page break before
     _build_section(
         elements, "Investment Thesis",
         sections.get("INVESTMENT_THESIS", thesis.get("final_thesis", "")),
         styles,
+        page_break_before=True,
     )
 
     # Bull/Bear boxes
     bull = thesis.get("bull_case", {})
     bear = thesis.get("bear_case", {})
 
-    bull_text = f"<b>Bull Case:</b> {bull.get('thesis', 'N/A')[:400]}"
-    bear_text = f"<b>Bear Case:</b> {bear.get('thesis', 'N/A')[:400]}"
+    bull_text = f"<b>Bull Case:</b> {_safe_text(bull.get('thesis', 'N/A'), 400)}"
+    bear_text = f"<b>Bear Case:</b> {_safe_text(bear.get('thesis', 'N/A'), 400)}"
 
     elements.append(Paragraph(bull_text, ParagraphStyle(
         "BullText", parent=styles["BodyText2"], textColor=POSITIVE,
@@ -629,50 +764,45 @@ def build_pdf(state: dict) -> bytes:
         elements.append(Spacer(1, 8))
         elements.append(Paragraph("<b>Key Catalysts:</b>", styles["SubSectionHeader"]))
         for c in catalysts[:5]:
-            elements.append(Paragraph(f"• {c}", styles["BodyText2"]))
-    elements.append(PageBreak())
+            elements.append(Paragraph(f"\u2022 {_safe_text(c)}", styles["BodyText2"]))
 
-    # Page 16: Risk Factors
+    # Risk Factors — minor section, no forced page break
     _build_section(
         elements, "Risk Factors",
         sections.get("RISK_FACTORS", ""),
         styles,
     )
-    elements.append(PageBreak())
 
-    # Page 17: ESG & Governance
+    # ESG & Governance — minor section
     _build_section(
         elements, "ESG & Governance",
         sections.get("ESG_GOVERNANCE", ""),
         styles,
     )
-    if "dividend_history" in charts:
-        elements.append(_img_from_bytes(charts["dividend_history"], width=460, max_height=200))
-    elements.append(PageBreak())
+    _embed_chart("dividend_history", max_height=200)
 
-    # Page 18: Disclaimer
+    # Disclaimer — always on a fresh page
+    elements.append(PageBreak())
     elements.append(Paragraph("Disclaimer", styles["SectionHeader"]))
     elements.append(HRFlowable(width="100%", thickness=1, color=SECONDARY, spaceAfter=8))
-    disclaimer_text = """
-    This report is prepared for informational purposes only and does not constitute investment advice,
-    a recommendation, or an offer to buy or sell any securities. The information contained herein is
-    based on sources believed to be reliable, but no representation or warranty, express or implied,
-    is made as to its accuracy, completeness, or timeliness.
-
-    Past performance is not indicative of future results. Investments in securities involve risk,
-    including the possible loss of principal. The analysis, opinions, and estimates expressed in this
-    report are subject to change without notice.
-
-    This report was generated by an automated equity research system using AI-assisted analysis.
-    All data sourced from Fintables/evofin, Yahoo Finance, İş Yatırım, TCMB EVDS, KAP, and
-    other publicly available sources. Users should conduct their own due diligence before making
-    investment decisions.
-
-    BIST (Borsa İstanbul) listed securities are subject to Turkish capital markets regulations.
-    Foreign investors should consider currency risk (TRY) and country-specific regulatory risks.
-
-    © {year} BIST Equity Research. All rights reserved.
-    """.format(year=datetime.now().year)
+    disclaimer_text = (
+        "This report is prepared for informational purposes only and does not constitute "
+        "investment advice, a recommendation, or an offer to buy or sell any securities. "
+        "The information contained herein is based on sources believed to be reliable, but "
+        "no representation or warranty, express or implied, is made as to its accuracy, "
+        "completeness, or timeliness.\n\n"
+        "Past performance is not indicative of future results. Investments in securities "
+        "involve risk, including the possible loss of principal. The analysis, opinions, "
+        "and estimates expressed in this report are subject to change without notice.\n\n"
+        "This report was generated by an automated equity research system using AI-assisted "
+        "analysis. All data sourced from Fintables/evofin, Yahoo Finance, Is Yatirim, "
+        "TCMB EVDS, KAP, and other publicly available sources. Users should conduct their "
+        "own due diligence before making investment decisions.\n\n"
+        "BIST (Borsa Istanbul) listed securities are subject to Turkish capital markets "
+        "regulations. Foreign investors should consider currency risk (TRY) and "
+        "country-specific regulatory risks.\n\n"
+        f"\u00a9 {datetime.now().year} BIST Equity Research. All rights reserved."
+    )
     elements.append(Paragraph(disclaimer_text, styles["Disclaimer"]))
 
     # Build PDF

@@ -122,7 +122,11 @@ async def run_research_pipeline(
         "macro_data": {},
         "earnings_data": {},
         "isyatirim_coverage": {},
+        "isyatirim_financials": None,
         "social_media_data": {},
+        "benchmark_2y": None,
+        "peer_tickers": [],
+        "kap_disclosures": [],
         "fundamental_analysis": {},
         "technical_analysis": {},
         "_technical_chart_data": {},
@@ -136,8 +140,13 @@ async def run_research_pipeline(
         "agent_logs": [],
     }
 
-    # Run the graph
-    final_state = await app.ainvoke(initial_state)
+    try:
+        final_state = await app.ainvoke(initial_state)
+    except Exception as e:
+        logger.error("Pipeline failed for %s: %s", ticker, e)
+        initial_state["errors"] = [f"Pipeline failure: {e}"]
+        return initial_state
+
     logger.info("Pipeline complete for %s. Agents: %d, Errors: %d",
                 ticker, len(final_state.get("agent_logs", [])),
                 len(final_state.get("errors", [])))

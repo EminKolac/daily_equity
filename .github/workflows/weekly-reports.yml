@@ -1,90 +1,113 @@
+# Weekly BIST Equity Research Reports
+#
+# Required GitHub Secrets:
+#   - ANTHROPIC_API_KEY   : API key for Anthropic Claude LLM
+#   - TCMB_EVDS_API_KEY   : API key for TCMB EVDS (Central Bank data)
+#   - APIFY_API_TOKEN     : API token for Apify web scraping
+#   - SMTP_USER           : SMTP username for sending report emails
+#   - SMTP_PASSWORD       : SMTP password for sending report emails
+
 name: Weekly BIST Equity Research Reports
 
 on:
   schedule:
-    # Every Sunday at 07:00 UTC = 10:00 AM Istanbul time (UTC+3)
+    # Every Sunday at 07:00 UTC = 10:00 AM Istanbul time (Europe/Istanbul, UTC+3)
     - cron: '0 7 * * 0'
-  workflow_dispatch:  # Allow manual trigger
+  workflow_dispatch:
+    inputs:
+      ticker:
+        description: 'Optional: single ticker symbol to generate (e.g. THYAO). Leave empty to run all tickers.'
+        required: false
+        default: ''
+        type: string
 
 env:
   PYTHON_VERSION: '3.11'
 
 jobs:
-  generate-reports:
+  # -------------------------------------------------------------------
+  # Job 1: generate-all-reports
+  #   Runs on the weekly cron schedule, or on manual dispatch when no
+  #   ticker input is provided.
+  # -------------------------------------------------------------------
+  generate-all-reports:
+    if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.ticker == '')
     runs-on: ubuntu-latest
-    timeout-minutes: 120  # 2 hours max for all 11 tickers
+    timeout-minutes: 120
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: 'pip'
+          cache-dependency-path: bist-equity-research/requirements.txt
 
       - name: Install dependencies
-        working-directory: bist-equity-research
         run: |
           pip install --upgrade pip setuptools wheel
-          pip install -r requirements.txt
+          pip install -r bist-equity-research/requirements.txt
 
-      - name: Create .env file
+      - name: Run report generation pipeline (all tickers)
         working-directory: bist-equity-research
-        run: |
-          cat > .env <<EOF
-          ANTHROPIC_API_KEY=${{ secrets.ANTHROPIC_API_KEY }}
-          TCMB_EVDS_API_KEY=${{ secrets.TCMB_EVDS_API_KEY }}
-          APIFY_API_TOKEN=${{ secrets.APIFY_API_TOKEN }}
-          SMTP_SERVER=${{ secrets.SMTP_SERVER }}
-          SMTP_PORT=${{ secrets.SMTP_PORT }}
-          SMTP_USER=${{ secrets.SMTP_USER }}
-          SMTP_PASSWORD=${{ secrets.SMTP_PASSWORD }}
-          REPORT_RECIPIENT=mehmetemin.kolac@tvf.com.tr
-          EOF
-          sed -i 's/^[[:space:]]*//' .env
-
-      - name: Create reports directory
-        working-directory: bist-equity-research
-        run: mkdir -p reports
-
-      - name: Generate reports for all 11 tickers
-        working-directory: bist-equity-research
-        continue-on-error: true
-        run: |
-          python main.py --all --send-email
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           TCMB_EVDS_API_KEY: ${{ secrets.TCMB_EVDS_API_KEY }}
           APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
-          SMTP_SERVER: ${{ secrets.SMTP_SERVER }}
-          SMTP_PORT: ${{ secrets.SMTP_PORT }}
           SMTP_USER: ${{ secrets.SMTP_USER }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
-          REPORT_RECIPIENT: mehmetemin.kolac@tvf.com.tr
+        run: python main.py --all --send-email
 
       - name: Upload reports as artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: equity-reports-${{ github.run_number }}
-          path: bist-equity-research/reports/*.pdf
+          name: equity-reports-all-${{ github.run_number }}
+          path: bist-equity-research/reports/
           retention-days: 90
 
-      - name: Report generation summary
-        if: always()
-        working-directory: bist-equity-research
+  # -------------------------------------------------------------------
+  # Job 2: single-ticker
+  #   Runs only on manual dispatch when a ticker input is provided.
+  # -------------------------------------------------------------------
+  single-ticker:
+    if: github.event_name == 'workflow_dispatch' && github.event.inputs.ticker != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+          cache-dependency-path: bist-equity-research/requirements.txt
+
+      - name: Install dependencies
         run: |
-          echo "## Report Generation Summary" >> $GITHUB_STEP_SUMMARY
-          echo "| Ticker | Status |" >> $GITHUB_STEP_SUMMARY
-          echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
-          for ticker in THYAO TCELL TTKOM HALKB KRDMD SISE ASELS TUPRS EREGL SAHOL BIMAS; do
-            if ls reports/${ticker}_report_*.pdf 1>/dev/null 2>&1; then
-              echo "| $ticker | Generated |" >> $GITHUB_STEP_SUMMARY
-            else
-              echo "| $ticker | Failed |" >> $GITHUB_STEP_SUMMARY
-            fi
-          done
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "Reports emailed to: mehmetemin.kolac@tvf.com.tr" >> $GITHUB_STEP_SUMMARY
+          pip install --upgrade pip setuptools wheel
+          pip install -r bist-equity-research/requirements.txt
+
+      - name: Run report generation pipeline (single ticker)
+        working-directory: bist-equity-research
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TCMB_EVDS_API_KEY: ${{ secrets.TCMB_EVDS_API_KEY }}
+          APIFY_API_TOKEN: ${{ secrets.APIFY_API_TOKEN }}
+          SMTP_USER: ${{ secrets.SMTP_USER }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python main.py --ticker ${{ github.event.inputs.ticker }} --send-email
+
+      - name: Upload report as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: equity-report-${{ github.event.inputs.ticker }}-${{ github.run_number }}
+          path: bist-equity-research/reports/
+          retention-days: 90

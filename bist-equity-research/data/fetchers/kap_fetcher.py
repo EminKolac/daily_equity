@@ -39,6 +39,7 @@ class KAPFetcher:
         url = f"{KAP_BASE}/tr/api/memberDisclosureQuery"
         end_date = datetime.now()
         start_date = end_date - timedelta(days=90)
+        import time
 
         payload = {
             "fromDate": start_date.strftime("%Y-%m-%d"),
@@ -57,24 +58,29 @@ class KAPFetcher:
             "assignedMemberOid": "",
         }
 
-        try:
-            resp = self.session.post(url, json=payload, timeout=self.timeout)
-            resp.raise_for_status()
-            data = resp.json()
+        for attempt in range(2):
+            try:
+                resp = self.session.post(url, json=payload, timeout=self.timeout)
+                resp.raise_for_status()
+                data = resp.json()
 
-            disclosures = []
-            items = data if isinstance(data, list) else data.get("disclosures", [])
-            for item in items[:limit]:
-                disclosures.append({
-                    "date": item.get("publishDate", item.get("disclosureDate", "")),
-                    "title": item.get("title", item.get("subject", "")),
-                    "type": item.get("disclosureType", item.get("type", "")),
-                    "summary": item.get("summary", item.get("title", "")),
-                })
-            return disclosures
-        except Exception as e:
-            logger.error("KAP disclosures fetch failed for %s: %s", ticker, e)
-            return []
+                disclosures = []
+                items = data if isinstance(data, list) else data.get("disclosures", [])
+                for item in items[:limit]:
+                    disclosures.append({
+                        "date": item.get("publishDate", item.get("disclosureDate", "")),
+                        "title": item.get("title", item.get("subject", "")),
+                        "type": item.get("disclosureType", item.get("type", "")),
+                        "summary": item.get("summary", item.get("title", "")),
+                    })
+                return disclosures
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning("KAP retry for %s: %s", ticker, e)
+                    time.sleep(3)
+                else:
+                    logger.error("KAP disclosures fetch failed for %s: %s", ticker, e)
+        return []
 
     def get_insider_trades(self, ticker: str) -> list[dict]:
         """Fetch insider trading disclosures via KAP."""

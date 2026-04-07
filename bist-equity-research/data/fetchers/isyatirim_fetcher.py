@@ -30,6 +30,26 @@ class IsYatirimFetcher:
             "Accept": "application/json",
         })
 
+    def _request_with_retry(self, method: str, url: str, retries: int = 2, **kwargs):
+        """Execute HTTP request with retry and exponential backoff."""
+        import time
+        kwargs.setdefault("timeout", self.timeout)
+        for attempt in range(retries + 1):
+            try:
+                if method == "GET":
+                    resp = self.session.get(url, **kwargs)
+                else:
+                    resp = self.session.post(url, **kwargs)
+                resp.raise_for_status()
+                return resp
+            except Exception as e:
+                if attempt < retries:
+                    wait = 2 * (attempt + 1)
+                    logger.warning("İş Yatırım retry %d/%d (%s): %s", attempt + 1, retries, url.split("/")[-1], e)
+                    time.sleep(wait)
+                else:
+                    raise
+
     def get_historical_prices(self, ticker: str, days: int = 730) -> pd.DataFrame:
         end = datetime.now()
         start = end - timedelta(days=days)
@@ -43,8 +63,7 @@ class IsYatirimFetcher:
             "enddate": end_str,
         }
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
+            resp = self._request_with_retry("GET", url, params=params)
             data = resp.json()
             values = data.get("value", [])
             if not values:
@@ -74,8 +93,7 @@ class IsYatirimFetcher:
             "currency": "TRY",
         }
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
+            resp = self._request_with_retry("GET", url, params=params)
             data = resp.json()
             values = data.get("value", [])
             return pd.DataFrame(values) if values else pd.DataFrame()
@@ -98,8 +116,7 @@ class IsYatirimFetcher:
         url = f"{BASE_URL}/Hisse"
         params = {"hession": ticker}
         try:
-            resp = self.session.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
+            resp = self._request_with_retry("GET", url, params=params)
             data = resp.json()
             return data
         except Exception as e:

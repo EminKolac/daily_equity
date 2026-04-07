@@ -31,7 +31,7 @@ class TCMBFetcher:
 
     def _fetch_series(self, series_code: str, start_date: str, end_date: str) -> pd.DataFrame:
         if not self.api_key:
-            logger.warning("No TCMB API key — using fallback for %s", series_code)
+            logger.debug("No TCMB API key — using fallback for %s", series_code)
             return pd.DataFrame()
 
         url = f"{EVDS_BASE}/series={series_code}"
@@ -41,20 +41,26 @@ class TCMBFetcher:
             "type": "json",
             "key": self.api_key,
         }
-        try:
-            resp = self.session.get(url, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            items = data.get("items", [])
-            if not items:
-                return pd.DataFrame()
-            df = pd.DataFrame(items)
-            if "Tarih" in df.columns:
-                df["Tarih"] = pd.to_datetime(df["Tarih"], format="%d-%m-%Y")
-            return df
-        except Exception as e:
-            logger.error("TCMB fetch failed for %s: %s", series_code, e)
-            return pd.DataFrame()
+        import time
+        for attempt in range(2):
+            try:
+                resp = self.session.get(url, params=params, timeout=30)
+                resp.raise_for_status()
+                data = resp.json()
+                items = data.get("items", [])
+                if not items:
+                    return pd.DataFrame()
+                df = pd.DataFrame(items)
+                if "Tarih" in df.columns:
+                    df["Tarih"] = pd.to_datetime(df["Tarih"], format="%d-%m-%Y")
+                return df
+            except Exception as e:
+                if attempt == 0:
+                    logger.warning("TCMB retry for %s: %s", series_code, e)
+                    time.sleep(2)
+                else:
+                    logger.error("TCMB fetch failed for %s: %s", series_code, e)
+        return pd.DataFrame()
 
     def get_macro_indicators(self, lookback_days: int = 365) -> dict[str, pd.DataFrame]:
         end = datetime.now()
