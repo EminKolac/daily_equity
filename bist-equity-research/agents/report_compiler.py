@@ -19,6 +19,22 @@ from config.tickers import TICKERS
 logger = logging.getLogger(__name__)
 
 
+def _ci_filter(df: pd.DataFrame, col: str, candidates: list[str]) -> pd.DataFrame:
+    """Case-insensitive filter on a column with multiple candidate values.
+
+    Banks use ALL CAPS kalem names while non-banks use Title Case.
+    """
+    lower_map = {str(v).lower().strip(): v for v in df[col].unique()}
+    matched = []
+    for c in candidates:
+        actual = lower_map.get(c.lower().strip())
+        if actual is not None:
+            matched.append(actual)
+    if not matched:
+        return df[df[col].isin([])]  # empty
+    return df[df[col].isin(matched)]
+
+
 def create_report_compiler(llm=None):
     """Factory: returns a report compiler node."""
 
@@ -62,11 +78,22 @@ def create_report_compiler(llm=None):
             income_df = financial_data.get("income_statement")
             _rev_chart_done = False
             if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
-                # Extract quarterly revenue data (real evofin kalem names)
-                rev_rows = income_df[income_df["kalem"].isin(["Satış Gelirleri", "Hasılat", "Net Satışlar"])].sort_values("tarih")
-                ni_rows = income_df[income_df["kalem"].isin(["Dönem Net Karı (Zararı)", "Net Dönem Karı/Zararı"])].sort_values("tarih")
-                gross_profit_rows = income_df[income_df["kalem"].isin(["Brüt Kar (Zarar)", "Brüt Kâr (Zarar)"])].sort_values("tarih")
-                ebitda_rows = income_df[income_df["kalem"].str.contains("FAVÖK|Faaliyet Karı", case=False, na=False)].sort_values("tarih")
+                # Extract quarterly revenue data (case-insensitive for bank vs non-bank)
+                rev_rows = _ci_filter(income_df, "kalem", [
+                    "Satış Gelirleri", "Hasılat", "Net Satışlar",
+                    "SATIŞ GELİRLERİ", "HASILAT", "NET SATIŞLAR",
+                ]).sort_values("tarih")
+                ni_rows = _ci_filter(income_df, "kalem", [
+                    "Dönem Karı (Zararı)", "Dönem Net Karı (Zararı)",
+                    "Sürdürülen Faaliyetler Dönem Karı/Zararı",
+                    "DÖNEM NET KARI VEYA ZARARI",
+                    "SÜRDÜRÜLEN FAALİYETLER DÖNEM NET KARI (ZARARI)",
+                ]).sort_values("tarih")
+                gross_profit_rows = _ci_filter(income_df, "kalem", [
+                    "Brüt Kar (Zarar)", "Brüt Kâr (Zarar)",
+                    "BRÜT KAR (ZARAR)", "BRÜT KÂR (ZARAR)",
+                ]).sort_values("tarih")
+                ebitda_rows = income_df[income_df["kalem"].str.contains("FAVÖK|Faaliyet Karı|FAALİYET KARI", case=False, na=False)].sort_values("tarih")
 
                 if not rev_rows.empty and len(rev_rows) >= 2:
                     dates = rev_rows["tarih"].astype(str).tolist()
@@ -114,7 +141,11 @@ def create_report_compiler(llm=None):
         try:
             income_df = financial_data.get("income_statement")
             if income_df is not None and isinstance(income_df, pd.DataFrame) and not income_df.empty:
-                ni_rows = income_df[income_df["kalem"].isin(["Dönem Net Karı (Zararı)", "Net Dönem Karı/Zararı"])].sort_values("tarih")
+                ni_rows = _ci_filter(income_df, "kalem", [
+                    "Dönem Karı (Zararı)", "Dönem Net Karı (Zararı)",
+                    "Sürdürülen Faaliyetler Dönem Karı/Zararı",
+                    "DÖNEM NET KARI VEYA ZARARI",
+                ]).sort_values("tarih")
                 stock_info = price_data.get("stock_info", {})
                 shares_out = stock_info.get("sharesOutstanding", 0)
 
@@ -132,11 +163,11 @@ def create_report_compiler(llm=None):
         try:
             bs_df = financial_data.get("balance_sheet")
             if bs_df is not None and isinstance(bs_df, pd.DataFrame) and not bs_df.empty:
-                ca_rows = bs_df[bs_df["kalem"] == "Toplam Dönen Varlıklar"].sort_values("tarih")
-                nca_rows = bs_df[bs_df["kalem"] == "Toplam Duran Varlıklar"].sort_values("tarih")
-                cl_rows = bs_df[bs_df["kalem"] == "Toplam Kısa Vadeli Yükümlülükler"].sort_values("tarih")
-                ncl_rows = bs_df[bs_df["kalem"] == "Toplam Uzun Vadeli Yükümlülükler"].sort_values("tarih")
-                eq_rows = bs_df[bs_df["kalem"] == "Toplam Özkaynaklar"].sort_values("tarih")
+                ca_rows = _ci_filter(bs_df, "kalem", ["Toplam Dönen Varlıklar", "TOPLAM DÖNEN VARLIKLAR"]).sort_values("tarih")
+                nca_rows = _ci_filter(bs_df, "kalem", ["Toplam Duran Varlıklar", "TOPLAM DURAN VARLIKLAR"]).sort_values("tarih")
+                cl_rows = _ci_filter(bs_df, "kalem", ["Toplam Kısa Vadeli Yükümlülükler", "TOPLAM KISA VADELİ YÜKÜMLÜLÜKLER"]).sort_values("tarih")
+                ncl_rows = _ci_filter(bs_df, "kalem", ["Toplam Uzun Vadeli Yükümlülükler", "TOPLAM UZUN VADELİ YÜKÜMLÜLÜKLER"]).sort_values("tarih")
+                eq_rows = _ci_filter(bs_df, "kalem", ["Toplam Özkaynaklar", "ÖZKAYNAKLAR", "TOPLAM ÖZKAYNAKLAR"]).sort_values("tarih")
 
                 if not ca_rows.empty and len(ca_rows) >= 2:
                     dates_bs = ca_rows["tarih"].astype(str).tolist()
@@ -197,9 +228,9 @@ def create_report_compiler(llm=None):
                 latest_date = cf_df["tarih"].max()
                 latest_cf = cf_df[cf_df["tarih"] == latest_date]
 
-                ocf_rows = latest_cf[latest_cf["kalem"].str.contains("İşletme Faaliyetlerinden", case=False, na=False)]
-                capex_rows = latest_cf[latest_cf["kalem"].str.contains("Yatırım Faaliyetlerinden", case=False, na=False)]
-                fin_rows = latest_cf[latest_cf["kalem"].str.contains("Finansman Faaliyetlerinden", case=False, na=False)]
+                ocf_rows = latest_cf[latest_cf["kalem"].str.contains("İşletme Faaliyetlerinden|İŞLETME FAALİYETLERİNDEN", case=False, na=False)]
+                capex_rows = latest_cf[latest_cf["kalem"].str.contains("Yatırım Faaliyetlerinden|YATIRIM FAALİYETLERİNDEN", case=False, na=False)]
+                fin_rows = latest_cf[latest_cf["kalem"].str.contains("Finansman Faaliyetlerinden|FİNANSMAN FAALİYETLERİNDEN", case=False, na=False)]
 
                 if not ocf_rows.empty:
                     ocf = float(ocf_rows["deger"].iloc[0])

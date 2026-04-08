@@ -21,10 +21,41 @@ def _safe_float(val, default=0.0):
         return default
 
 
+def _find_kalem(df: pd.DataFrame, candidates: list[str], date_filter: str | None = None) -> float | None:
+    """Find a kalem value by trying multiple name variants (case-insensitive).
+
+    Evofin uses different naming conventions for banks (ALL CAPS) vs
+    non-banks (Title Case), e.g.:
+      Non-bank: "Dönem Karı (Zararı)", "Toplam Varlıklar"
+      Bank:     "DÖNEM NET KARI VEYA ZARARI", "VARLIKLAR TOPLAMI"
+
+    This helper normalises matching so all 11 tickers work.
+    """
+    if df is None or df.empty or "kalem" not in df.columns:
+        return None
+
+    subset = df
+    if date_filter and "tarih" in df.columns:
+        subset = df[df["tarih"] == date_filter]
+
+    kalem_lower_map = {str(k).lower().strip(): k for k in subset["kalem"].unique()}
+
+    for candidate in candidates:
+        cl = candidate.lower().strip()
+        if cl in kalem_lower_map:
+            original = kalem_lower_map[cl]
+            rows = subset[subset["kalem"] == original]
+            if not rows.empty:
+                val = rows["deger"].iloc[0]
+                return _safe_float(val)
+    return None
+
+
 def _extract_financials(financial_data: dict) -> dict:
     """Extract key financial metrics from raw data.
 
     Handles both evofin MCP data (kalem/deger format) and İş Yatırım data.
+    Supports both Title Case (non-banks) and ALL CAPS (banks) kalem names.
     """
     income = financial_data.get("income_statement")
     balance = financial_data.get("balance_sheet")
@@ -55,33 +86,40 @@ def _extract_financials(financial_data: dict) -> dict:
                 index="tarih", columns="kalem", values="deger", aggfunc="first"
             ).sort_index()
             if not pivoted.empty:
-                # Revenue trend (evofin uses "Satış Gelirleri")
-                for col_name in ["Satış Gelirleri", "Hasılat", "Net Satışlar"]:
-                    if col_name in pivoted.columns:
-                        rev_series = pivoted[col_name].dropna()
-                        if len(rev_series) >= 2:
-                            metrics["revenue_yoy_growth"] = float(
-                                (rev_series.iloc[-1] / rev_series.iloc[-5] - 1) * 100
-                            ) if len(rev_series) >= 5 else 0
-                            metrics["revenue_qoq_growth"] = float(
-                                (rev_series.iloc[-1] / rev_series.iloc[-2] - 1) * 100
-                            )
-                        break
+                # Build case-insensitive column lookup
+                _col_lower = {str(c).lower(): c for c in pivoted.columns}
+
+                def _find_col(*candidates):
+                    for c in candidates:
+                        actual = _col_lower.get(c.lower())
+                        if actual is not None:
+                            return actual
+                    return None
+
+                # Revenue trend
+                rev_col = _find_col("Satış Gelirleri", "Hasılat", "Net Satışlar",
+                                    "SATIŞ GELİRLERİ", "HASILAT", "NET SATIŞLAR")
+                if rev_col:
+                    rev_series = pivoted[rev_col].dropna()
+                    if len(rev_series) >= 2:
+                        metrics["revenue_yoy_growth"] = float(
+                            (rev_series.iloc[-1] / rev_series.iloc[-5] - 1) * 100
+                        ) if len(rev_series) >= 5 else 0
+                        metrics["revenue_qoq_growth"] = float(
+                            (rev_series.iloc[-1] / rev_series.iloc[-2] - 1) * 100
+                        )
+
                 # Gross margin trend
-                for rev_col in ["Satış Gelirleri", "Hasılat", "Net Satışlar"]:
-                    for cogs_col in ["Satışların Maliyeti (-)", "Satışların Maliyeti"]:
-                        if rev_col in pivoted.columns and cogs_col in pivoted.columns:
-                            rev_s = pivoted[rev_col].dropna()
-                            cogs_s = pivoted[cogs_col].dropna()
-                            if len(rev_s) > 0 and len(cogs_s) > 0:
-                                latest_rev = float(rev_s.iloc[-1])
-                                latest_cogs = abs(float(cogs_s.iloc[-1]))
-                                if latest_rev > 0:
-                                    metrics["gross_margin_pct"] = (latest_rev - latest_cogs) / latest_rev * 100
-                            break
-                    else:
-                        continue
-                    break
+                cogs_col = _find_col("Satışların Maliyeti (-)", "Satışların Maliyeti",
+                                     "SATIŞLARIN MALİYETİ (-)", "SATIŞLARIN MALİYETİ")
+                if rev_col and cogs_col:
+                    rev_s = pivoted[rev_col].dropna()
+                    cogs_s = pivoted[cogs_col].dropna()
+                    if len(rev_s) > 0 and len(cogs_s) > 0:
+                        latest_rev = float(rev_s.iloc[-1])
+                        latest_cogs = abs(float(cogs_s.iloc[-1]))
+                        if latest_rev > 0:
+                            metrics["gross_margin_pct"] = (latest_rev - latest_cogs) / latest_rev * 100
         except Exception:
             pass
 
@@ -93,19 +131,20 @@ def _extract_financials(financial_data: dict) -> dict:
             bs_items = dict(zip(latest_bs["kalem"], latest_bs["deger"].apply(_safe_float)))
 
             # Map common Turkish balance sheet items
-            # Real evofin balance sheet kalem names
+            # Real evofin balance sheet kalem names — includes both
+            # non-bank (Title Case) and bank (ALL CAPS) variants
             item_map = {
-                "current_assets": ["Toplam Dönen Varlıklar"],
-                "non_current_assets": ["Toplam Duran Varlıklar"],
-                "total_assets": ["Toplam Varlıklar"],
-                "current_liabilities": ["Toplam Kısa Vadeli Yükümlülükler"],
-                "non_current_liabilities": ["Toplam Uzun Vadeli Yükümlülükler"],
-                "total_equity": ["Toplam Özkaynaklar", "Ana Ortaklığa Ait Özkaynaklar"],
-                "total_liabilities": ["Toplam Yükümlülükler"],
-                "retained_earnings": ["Geçmiş Yıllar Karları/Zararları"],
-                "paid_in_capital": ["Ödenmiş Sermaye"],
-                "trade_receivables": ["Ticari Alacaklar"],
-                "long_term_debt": ["Finansal Borçlar"],
+                "current_assets": ["Toplam Dönen Varlıklar", "TOPLAM DÖNEN VARLIKLAR"],
+                "non_current_assets": ["Toplam Duran Varlıklar", "TOPLAM DURAN VARLIKLAR"],
+                "total_assets": ["Toplam Varlıklar", "VARLIKLAR TOPLAMI", "TOPLAM VARLIKLAR", "AKTİF TOPLAMI"],
+                "current_liabilities": ["Toplam Kısa Vadeli Yükümlülükler", "TOPLAM KISA VADELİ YÜKÜMLÜLÜKLER"],
+                "non_current_liabilities": ["Toplam Uzun Vadeli Yükümlülükler", "TOPLAM UZUN VADELİ YÜKÜMLÜLÜKLER"],
+                "total_equity": ["Toplam Özkaynaklar", "Ana Ortaklığa Ait Özkaynaklar", "ÖZKAYNAKLAR", "TOPLAM ÖZKAYNAKLAR"],
+                "total_liabilities": ["Toplam Yükümlülükler", "YÜKÜMLÜLÜKLER TOPLAMI", "TOPLAM YÜKÜMLÜLÜKLER"],
+                "retained_earnings": ["Geçmiş Yıllar Karları/Zararları", "GEÇMİŞ YILLAR KÂRLARI/ZARARLARI"],
+                "paid_in_capital": ["Ödenmiş Sermaye", "ÖDENMİŞ SERMAYE"],
+                "trade_receivables": ["Ticari Alacaklar", "TİCARİ ALACAKLAR"],
+                "long_term_debt": ["Finansal Borçlar", "FİNANSAL BORÇLAR", "Toplam Finansal Borçlar"],
             }
             for metric_key, tr_names in item_map.items():
                 for name in tr_names:
@@ -134,11 +173,18 @@ def _extract_financials(financial_data: dict) -> dict:
             latest_cf = cashflow[cashflow["tarih"] == latest_date]
             cf_items = dict(zip(latest_cf["kalem"], latest_cf["deger"].apply(_safe_float)))
             cf_map = {
-                "operating_cf": ["İşletme Faaliyetlerinden Nakit Akışları"],
-                "investing_cf": ["Yatırım Faaliyetlerinden Nakit Akışları"],
-                "financing_cf": ["Finansman Faaliyetlerinden Nakit Akışları"],
+                "operating_cf": ["İşletme Faaliyetlerinden Nakit Akışları",
+                                 "İŞLETME FAALİYETLERİNDEN NAKİT AKIŞLARI",
+                                 "A. İŞLETME FAALİYETLERİNDEN NAKİT AKIŞLARI"],
+                "investing_cf": ["Yatırım Faaliyetlerinden Nakit Akışları",
+                                 "YATIRIM FAALİYETLERİNDEN NAKİT AKIŞLARI",
+                                 "B. YATIRIM FAALİYETLERİNDEN NAKİT AKIŞLARI"],
+                "financing_cf": ["Finansman Faaliyetlerinden Nakit Akışları",
+                                 "FİNANSMAN FAALİYETLERİNDEN NAKİT AKIŞLARI",
+                                 "C. FİNANSMAN FAALİYETLERİNDEN NAKİT AKIŞLARI"],
                 "capex": ["Maddi ve Maddi Olmayan Duran Varlık Alımları",
-                          "Maddi Duran Varlık Alımından Kaynaklanan Nakit Çıkışları"],
+                          "Maddi Duran Varlık Alımından Kaynaklanan Nakit Çıkışları",
+                          "MADDİ VE MADDİ OLMAYAN DURAN VARLIK ALIMLARI"],
             }
             for metric_key, tr_names in cf_map.items():
                 for name in tr_names:
@@ -181,16 +227,30 @@ def create_fundamental_analyst(llm=None):
         #   Balance: "Toplam Dönen Varlıklar", "Toplam Varlıklar", "Toplam Özkaynaklar",
         #            "Ticari Alacaklar", "Finansal Borçlar"
         #   Cash flow: "İşletme Faaliyetlerinden Nakit Akışları"
+        # Use case-insensitive helper when evofin data is available
+        income_df = financial_data.get("income_statement")
+        balance_df = financial_data.get("balance_sheet")
+        latest_income_date = None
+        if isinstance(income_df, pd.DataFrame) and not income_df.empty and "tarih" in income_df.columns:
+            latest_income_date = income_df["tarih"].max()
+
         net_income = _safe_float(
-            metrics.get("income_Dönem Net Karı (Zararı)") or
-            metrics.get("income_Net Dönem Karı/Zararı") or
-            metrics.get("income_Net Dönem Karı") or
+            _find_kalem(income_df, [
+                "Dönem Karı (Zararı)", "Dönem Net Karı (Zararı)",
+                "Sürdürülen Faaliyetler Dönem Karı/Zararı",
+                "DÖNEM NET KARI VEYA ZARARI",
+                "SÜRDÜRÜLEN FAALİYETLER DÖNEM NET KARI (ZARARI)",
+                "Net Dönem Karı/Zararı", "Net Dönem Karı",
+            ], latest_income_date) or
+            metrics.get("income_Dönem Karı (Zararı)") or
             stock_info.get("netIncomeToCommon")
         )
         revenue = _safe_float(
+            _find_kalem(income_df, [
+                "Satış Gelirleri", "Hasılat", "Net Satışlar",
+                "SATIŞ GELİRLERİ", "HASILAT", "NET SATIŞLAR",
+            ], latest_income_date) or
             metrics.get("income_Satış Gelirleri") or
-            metrics.get("income_Hasılat") or
-            metrics.get("income_Net Satışlar") or
             stock_info.get("totalRevenue")
         )
         total_assets = _safe_float(
